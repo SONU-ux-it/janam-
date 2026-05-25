@@ -950,7 +950,7 @@ app.listen(PORT, () => {
 
 // ✅ FIXED: ROOMMATE POST - Now stores poster_user_id
 app.post("/roommate-post", authenticateToken, (req, res) => {
-  const { message, gender, phone } = req.body;
+  const { name,message, gender, phone } = req.body;
 
 
  const posts = loadPosts();
