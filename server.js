@@ -934,12 +934,9 @@ app.use((err, req, res, next) => {
   console.error('❌ ERROR:', err.message);
   res.status(500).json({ error: 'Server error' });
 });
-app.listen(PORT, () => {
-  console.log("🚀 SERVER STARTED SUCCESSFULLY");
-  console.log(`🌐 http://localhost:${PORT}`);
-  console.log("✅ Backend is STABLE (will not auto-close)");
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
-
 
 
 // ✅======================= END PRIVATE MESSAGING =======================✅
@@ -972,14 +969,6 @@ app.post("/roommate-post", authenticateToken, (req, res) => {
 
   res.json({ success: true });
 });
-posts.push(newPost);
-savePosts(posts); 
-
-
-  res.json({ success: true });
-});
-
-
 
 // ✅ FIXED: DELETE MY ROOMMATE POST - Backward compatible
 app.delete("/my-roommate-post/:postId", authenticateToken, (req, res) => {
@@ -1323,13 +1312,66 @@ app.patch("/roommate-edit/:id", (req, res) => {
 });
 // GET ALL ROOM POSTS (PUBLIC LISTING)
 app.get("/room-posts", (req, res) => {
-  const posts = loadPosts()
-    .filter(p => p.type === "room")
-    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
-  res.json(posts);
+  const { city, type, gender, budget } = req.query;
+
+  let posts = loadPosts()
+    .filter(p => p.type === "room" && !p.hidden);
+
+  const filtered = posts.filter((p) => {
+    let ok = true;
+
+    if (city) {
+      const c = city.toLowerCase();
+      const loc = (p.location || "").toLowerCase();
+      ok = ok && loc.includes(c);
+    }
+
+    if (type) {
+      ok = ok && (p.room_type || "").toLowerCase().includes(type.toLowerCase());
+    }
+
+    if (gender) {
+      const g = (p.gender || "").toLowerCase();
+
+      if (gender.toLowerCase() === "boys" || gender.toLowerCase() === "girls") {
+        ok = ok && (g === gender.toLowerCase() || g === "both");
+      } else {
+        ok = ok && g === gender.toLowerCase();
+      }
+    }
+
+    if (budget) {
+      const b = parseInt(budget);
+
+      let rentNum = 0;
+
+      try {
+        if (typeof p.rent_by_person === "object") {
+          const values = Object.values(p.rent_by_person).map(v =>
+            parseInt(String(v).replace(/\D/g, ""))
+          );
+
+          rentNum = Math.min(...values.filter(v => !isNaN(v)));
+        } else {
+          rentNum = parseInt(
+            String(p.rent_by_person || "").replace(/\D/g, "")
+          );
+        }
+      } catch {}
+
+      if (!isNaN(b) && !isNaN(rentNum)) {
+        ok = ok && rentNum <= b;
+      }
+    }
+
+    return ok;
+  });
+
+  filtered.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+  res.json(filtered);
 });
-
 
 
 // Start Server
