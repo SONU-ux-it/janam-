@@ -955,30 +955,20 @@ app.post("/roommate-post", authenticateToken, (req, res) => {
 
  const posts = loadPosts();
  
-app.post("/roommate-post", authenticateToken, (req, res) => {
-  const { message, gender, phone } = req.body;
 
-  const posts = loadPosts();
 
-  const newPost = {
-    id: uuidv4(),
-    name: req.user.name,          // ✅ ADD THIS
-    email: req.user.email,        // ✅ ADD THIS
-    phone: req.user.phone,        // ✅ ADD THIS
-    gender,
-    message,
-    poster_user_id: req.user.id,
-    poster_name: req.user.name,   // ✅ ADD THIS
-    type: "roommate",
-    hidden: false,
-    timestamp: new Date().toISOString()
-  };
+  const newPost = {
+    id: uuidv4(),
+    name,
+    message,
+    gender,
+    phone,
+    poster_user_id: req.user.id,
+    type: "roommate",              // ✅ YAHI ADD KIYA
+    hidden: false,                 // (optional but recommended)
+    timestamp: new Date().toISOString()
+  };
 
-  posts.push(newPost);
-  savePosts(posts);
-
-  res.json({ success: true });
-});
 
 posts.push(newPost);
 savePosts(posts); 
