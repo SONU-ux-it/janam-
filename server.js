@@ -950,26 +950,28 @@ app.listen(PORT, () => {
 
 // ✅ FIXED: ROOMMATE POST - Now stores poster_user_id
 app.post("/roommate-post", authenticateToken, (req, res) => {
-  const { name,message, gender, phone } = req.body;
+  const { name, message, gender, phone, email } = req.body;
 
+  const posts = loadPosts();
 
- const posts = loadPosts();
- 
-
-
-  const newPost = {
-    id: uuidv4(),
-    name,
+  const newPost = {
+    id: uuidv4(),
+    name,
+    email,
     message,
-    gender,
-    phone,
-    poster_user_id: req.user.id,
-    type: "roommate",              // ✅ YAHI ADD KIYA
-    hidden: false,                 // (optional but recommended)
-    timestamp: new Date().toISOString()
-  };
+    gender,
+    phone,
+    poster_user_id: req.user.id,
+    type: "roommate",
+    hidden: false,
+    timestamp: new Date().toISOString()
+  };
 
+  posts.push(newPost);
+  savePosts(posts);
 
+  res.json({ success: true });
+});
 posts.push(newPost);
 savePosts(posts); 
 
