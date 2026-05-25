@@ -959,7 +959,6 @@ app.post("/roommate-post", authenticateToken, (req, res) => {
 
   const newPost = {
     id: uuidv4(),
-    name,
     message,
     gender,
     phone,
