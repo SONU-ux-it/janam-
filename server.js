@@ -935,7 +935,9 @@ app.use((err, req, res, next) => {
   console.error('❌ ERROR:', err.message);
   res.status(500).json({ error: 'Server error' });
 });
-
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
 
 
 // ✅======================= END PRIVATE MESSAGING =======================✅
@@ -1383,9 +1385,7 @@ app.get("/room-posts", (req, res) => {
 
   res.json(filtered);
 });
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+
 
 // Start Server
   console.log(`✅ Backend running at ${BASE_URL}`);
