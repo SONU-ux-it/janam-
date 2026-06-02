@@ -598,21 +598,29 @@ app.post("/post-room", authenticateToken, upload.array("photos", 12), async (req
       }
     }
 
-console.log("BODY =", req.body);
 
-console.log("NEW ROOM =", {
-  name,
-  phone,
-  email,
-  gender,
-  location,
-  rent_by_person,
-  deposit,
-  room_type,
-  available_from,
-  facilities,
-  map_link
-});
+    const newRoom = {
+      id: uuidv4(),
+      name: name || "",
+      phone: phone || "",
+      email: email || "",
+      gender: gender || "",
+      location: location || "",
+      rent_by_person: parsedRentByPerson, // ✅ Properly parsed object/string
+      deposit: deposit || "",
+      room_type: room_type || "",
+      available_from: available_from || "",
+      facilities: facilities || "",
+      map_link: map_link || "",
+      imageLinks,
+      type: "room",
+      poster_user_id: req.user.id, // ✅ Who posted this (consistent field name)
+      poster_name: req.user.name, // ✅ For My Rooms
+      poster_phone: req.user.phone,
+      poster_email: req.user.email,
+      timestamp: new Date().toISOString(),
+    };
+
 
     const posts = loadPosts();
     posts.push(newRoom);
