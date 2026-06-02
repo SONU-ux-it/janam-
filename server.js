@@ -613,7 +613,7 @@ app.post("/post-room", authenticateToken, upload.array("photos", 12), async (req
       facilities: facilities || "",
       map_link: map_link || "",
       imageLinks,
-      type: "",
+      type: "room",
       poster_user_id: req.user.id, // ✅ Who posted this (consistent field name)
       poster_name: req.user.name, // ✅ For My Rooms
       poster_phone: req.user.phone,
