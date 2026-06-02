@@ -161,4 +161,29 @@
     "poster_email": "sonusonua22409@gmail.com",
     "timestamp": "2026-03-15T03:47:46.227Z"
   }
+  "id": "001b8e16-37e0-4790-9d55-81da943cd61c",
+    "name": "ghanshyam",
+    "gender": "Female",
+    "phone": "07851818842",
+    "email": "krishnkrishn@45gmail.com",
+    "message": "me ghanshyam hu",
+    "replies": [
+      {
+        "senderId": "1091c0a6-8cd9-4fe1-a218-6c2c01464444",
+        "senderName": "sonu",
+        "senderEmail": "sonusonua22409@gmail.com",
+        "senderPhone": "sonusonua22409@gmail.com",
+        "replyMessage": "hii",
+        "timestamp": "2025-12-27T15:35:05.946Z"
+      }
+    ],
+    "poster_user_id": "6e690a34-c51a-431a-b05c-83f7b1dd9b82",
+    "poster_name": "ghanshyam",
+    "type": "roommate",
+    "timestamp": "2025-12-22T12:12:46.934Z",
+    "updatedAt": "2026-02-17T06:29:47.502Z",
+    "hidden": true
+  },
+
+
 ]
