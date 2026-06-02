@@ -161,6 +161,7 @@ function loadPosts() {
 function savePosts(posts) {
   fs.writeFileSync(POSTS_FILE, JSON.stringify(posts, null, 2));
 }
+
 function loadChats() {
   if (!fs.existsSync(CHAT_FILE)) return {};
   try {
@@ -934,9 +935,7 @@ app.use((err, req, res, next) => {
   console.error('❌ ERROR:', err.message);
   res.status(500).json({ error: 'Server error' });
 });
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+
 
 
 // ✅======================= END PRIVATE MESSAGING =======================✅
@@ -1204,24 +1203,36 @@ app.get("/admin-data", (req, res) => {
   res.json(sortedRooms);
 });
 
+app.delete("/delete-room/:id", authenticateToken, (req, res) => {
 
-// ✅ DELETE ROOM BY ID (ADMIN)
-app.delete("/delete-room/:id", (req, res) => {
   const { id } = req.params;
 
   let posts = loadPosts();
-  const index = posts.findIndex(p => p.id === id && p.type === "room");
+
+  const index = posts.findIndex(
+    p =>
+      p.id === id &&
+      p.type === "room" &&
+      getPosterUserId(p) === req.user.id
+  );
 
   if (index === -1) {
-    return res.status(404).json({ success: false, message: "Room not found" });
+    return res.status(404).json({
+      success: false,
+      message: "Room not found or not yours"
+    });
   }
 
   posts.splice(index, 1);
+
   savePosts(posts);
 
-  res.json({ success: true, message: "Room deleted successfully" });
-});
+  res.json({
+    success: true,
+    message: "Room deleted successfully"
+  });
 
+});
 
 // ✅ TOGGLE HIDE ROOM BY ID (ADMIN)
 app.patch("/toggle-room/:id", (req, res) => {
@@ -1372,7 +1383,9 @@ app.get("/room-posts", (req, res) => {
 
   res.json(filtered);
 });
-
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
 
 // Start Server
   console.log(`✅ Backend running at ${BASE_URL}`);
