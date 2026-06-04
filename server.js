@@ -547,21 +547,11 @@ app.delete("/my-room/:postId", authenticateToken, (req, res) => {
 
 // ✅ FIXED POST ROOM - PERFECTLY MATCHES FRONTEND FormData
 app.post("/post-room", authenticateToken, upload.array("photos", 12), async (req, res) => {
-  try {
-
-    console.log("========== POST ROOM DEBUG ==========");
-    console.log("BODY =", req.body);
-    console.log("BODY KEYS =", Object.keys(req.body));
-    console.log("FILES COUNT =", req.files?.length || 0);
-    console.log("====================================");
-
-    console.log("📤 /post-room received:", {
-      hasFiles: !!req.files?.length,
-      fileCount: req.files?.length || 0,
-      bodyKeys: Object.keys(req.body),
-    });
-
-
+  try {
+    console.log("BODY =", req.body);
+console.log("FILES =", req.files);
+console.log("BODY KEYS =", Object.keys(req.body)
+    );
 
 
     const {
