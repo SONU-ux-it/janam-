@@ -88,7 +88,9 @@ function authenticateToken(req, res, next) {
   const token = parts[1];
   const userId = token.split(":")[0];
 
-async function authenticateToken(req, res, next) {
+const users = loadUsers();
+const user = users.find((u) => u.id === userId);
+  if (!user) {
     return res.status(401).json({ success: false, message: "Invalid token" });
   }
 
@@ -146,6 +148,12 @@ function getChatAccessInfo(chatId, currentUserId) {
 }
 
 
+// ---------- Data Storage ----------
+const POSTS_FILE = path.join(__dirname, "posts.json");
+const CHAT_FILE = path.join(__dirname, "roommate-reply.json");
+const USERS_FILE = path.join(__dirname, "users.json");
+const WISHLIST_FILE = path.join(__dirname, "wishlist.json");
+const PRIVATE_MESSAGES_FILE = path.join(__dirname, "private-messages.json"); // ✅ NEW: Private messages
 const UserSchema = new mongoose.Schema({
   id: String,
   name: String,
@@ -366,7 +374,7 @@ const user = await User.findOne({
 
 
 // ✅ CURRENT USER - FIXED WITH MIDDLEWARE
-app.get("/me",authenticateToken, async (req, res)=> {
+app.get("/me", authenticateToken, (req, res) => {
   res.json({
     success: true,
     user: req.user,
@@ -376,7 +384,7 @@ app.get("/me",authenticateToken, async (req, res)=> {
 
 // ✅======================= WISHLIST ROUTES =======================✅
 // 16. ADD TO WISHLIST
-app.post("/wishlist/add",authenticateToken, async (req, res)=> {
+app.post("/wishlist/add", authenticateToken, (req, res) => {
   const { postId } = req.body;
 
 
@@ -386,6 +394,9 @@ app.post("/wishlist/add",authenticateToken, async (req, res)=> {
 
 
   const wishlist = loadWishlist();
+  const posts = loadPosts();
+  const post = posts.find((p) => p.id === postId && p.type === "room");
+
 
 
 
@@ -418,7 +429,7 @@ app.post("/wishlist/add",authenticateToken, async (req, res)=> {
 
 
 // 17. REMOVE FROM WISHLIST
-app.post("/wishlist/remove",authenticateToken, async (req, res)=> {
+app.post("/wishlist/remove", authenticateToken, (req, res) => {
   const { postId } = req.body;
 
 
@@ -454,12 +465,12 @@ app.post("/wishlist/remove",authenticateToken, async (req, res)=> {
 
 
 // 18. GET USER WISHLIST
-app.get("/wishlist", authenticateToken, async (req, res) => {
+app.get("/wishlist", authenticateToken, (req, res) => {
   const wishlist = loadWishlist();
   const wishlistIds = wishlist[req.user.id] || [];
 
 
-  const posts = await Post.find();
+  const posts = loadPosts();
   const wishlistPosts = posts
     .filter((p) => p.type === "room" && wishlistIds.includes(p.id))
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
@@ -478,7 +489,7 @@ app.get("/wishlist", authenticateToken, async (req, res) => {
 
 
 // 19. CHECK IF POST IS IN WISHLIST
-app.get("/wishlist/:postId",authenticateToken, async (req, res)=> {
+app.get("/wishlist/:postId", authenticateToken, (req, res) => {
   const { postId } = req.params;
 
 
@@ -498,7 +509,7 @@ app.get("/wishlist/:postId",authenticateToken, async (req, res)=> {
 
 
 // 🚨 ✅ FIXED: DELETE MY ROOM - SUPPORTS BOTH FIELD NAMES
-app.delete("/my-room/:postId",authenticateToken, async (req, res)=> {
+app.delete("/my-room/:postId", authenticateToken, (req, res) => {
   const { postId } = req.params;
 
 
@@ -507,7 +518,7 @@ app.delete("/my-room/:postId",authenticateToken, async (req, res)=> {
   }
 
 
-  const posts = await Post.find();
+  const posts = loadPosts();
 
 
   // ✅ FIX: Checks both 'poster_user_id' AND 'posteruserid' to avoid 404 on old posts
@@ -538,10 +549,9 @@ app.delete("/my-room/:postId",authenticateToken, async (req, res)=> {
 
 
   // Delete the post
- await Post.deleteOne({
- id: postId,
- poster_user_id: req.user.id
-});
+  posts.splice(postIndex, 1);
+  savePosts(posts);
+
 
   console.log(`✅ DELETED ROOM: ${postId} by user ${req.user.id}`);
 
@@ -630,8 +640,10 @@ console.log("BODY KEYS =", Object.keys(req.body)
     };
 
 
-    const posts = await Post.find();
- await Post.create(newRoom);
+    const posts = loadPosts();
+    posts.push(newRoom);
+    savePosts(posts);
+
 
     console.log("✅ Room posted successfully:", newRoom.id);
 
@@ -653,11 +665,8 @@ console.log("BODY KEYS =", Object.keys(req.body)
 
 
 // ✅ FIXED: MY ROOMS - Backward compatible
-app.get("/my-rooms",authenticateToken, async (req, res)=> {
-const posts = await Post.find({
- type:"room",
- poster_user_id:req.user.id
-});
+app.get("/my-rooms", authenticateToken, (req, res) => {
+  const posts = loadPosts().filter((p) => p.type === "room" && getPosterUserId(p) === req.user.id);
   res.json({
     success: true,
     rooms: posts.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)),
@@ -667,11 +676,10 @@ const posts = await Post.find({
 
 
 // ✅ FIXED: MY ROOMMATE POSTS - Backward compatible for OLD posts
-app.get("/my-roommate-posts",authenticateToken, async (req, res)=> {
- const posts = await Post.find({
- type:"roommate",
- poster_user_id:req.user.id
-});
+app.get("/my-roommate-posts", authenticateToken, (req, res) => {
+  const posts = loadPosts().filter(
+    (p) => p.type === "roommate" && getPosterUserId(p) === req.user.id
+  );
   res.json({
     success: true,
     posts: posts.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)),
@@ -684,12 +692,10 @@ app.get("/my-roommate-posts",authenticateToken, async (req, res)=> {
 
 // ✅ 1. SEND PRIVATE MESSAGE (Room poster ↔ Reply sender)
 // ✅ UPDATED: Supports BOTH formats (chatId OR targetUserId/postId)
-app.post("/private-message",authenticateToken, async (req, res)=> {
+app.post("/private-message", authenticateToken, (req, res) => {
   const { targetUserId, postId, message, chatId: incomingChatId } = req.body;
 
-const PrivateMessageSchema = new mongoose.Schema({}, {
-  strict:false
-});
+
   // Common validation
   if (!message || !String(message).trim()) {
     return res.status(400).json({
@@ -710,15 +716,9 @@ const PrivateMessageSchema = new mongoose.Schema({}, {
     }
 
 
-const PrivateMessage = mongoose.model(
-  "PrivateMessage",
-  PrivateMessageSchema
-);
-const chatId = incomingChatId;
+    const messagesStore = loadPrivateMessages();
+    const chatId = incomingChatId;
 
-const messagesStore = await PrivateMessage.find({
-  chatId
-});
 
     if (!messagesStore[chatId]) {
       messagesStore[chatId] = [];
@@ -737,10 +737,8 @@ const messagesStore = await PrivateMessage.find({
     };
 
 
-   await PrivateMessage.create({
- chatId,
- ...newMessage
-});
+    messagesStore[chatId].push(newMessage);
+    savePrivateMessages(messagesStore);
 
 
     console.log(`💬 MESSAGE via chatId: ${req.user.name} → ${access.otherUserId} (${chatId})`);
@@ -766,9 +764,7 @@ const messagesStore = await PrivateMessage.find({
   console.log(`🔍 DEBUG: Creating new chat ${req.user.id}_${targetUserId}_${postId}`);
 
 
-  const messagesStore = await PrivateMessage.find({
- chatId
-});
+  const messagesStore = loadPrivateMessages();
   const builtChatId = `${req.user.id}_${targetUserId}_${postId}`;
 
 
@@ -805,10 +801,8 @@ const messagesStore = await PrivateMessage.find({
 
 
 // ✅ UPDATED: /my-chats (WhatsApp style - separate chat per post)
-app.get("/my-chats",authenticateToken, async (req, res)=> {
-  const messagesStore = await PrivateMessage.find({
- chatId
-});
+app.get("/my-chats", authenticateToken, (req, res) => {
+  const messagesStore = loadPrivateMessages();
   const users = loadUsers();
   const chatsArray = [];
 
@@ -858,7 +852,7 @@ app.get("/my-chats",authenticateToken, async (req, res)=> {
 
 
 // ✅ 2. GET USER'S ALL PRIVATE CHATS (Shows in Profile)
-app.get("/my-messages",authenticateToken, async (req, res)=> {
+app.get("/my-messages", authenticateToken, (req, res) => {
   const messages = loadPrivateMessages();
   const allPosts = loadPosts();
   const users = loadUsers();
@@ -913,7 +907,7 @@ app.get("/my-messages",authenticateToken, async (req, res)=> {
 // ✅ 3. GET SPECIFIC CHAT MESSAGES
 // ✅ UPDATED: blocks other users from viewing someone else's chat
 // ✅ GET SPECIFIC CHAT MESSAGES (STABLE)
-app.get("/chat/:chatId", authenticateToken, async (req, res) => {
+app.get("/chat/:chatId", authenticateToken, (req, res) => {
   const { chatId } = req.params;
 
   const access = getChatAccessInfo(chatId, req.user.id);
@@ -927,18 +921,14 @@ app.get("/chat/:chatId", authenticateToken, async (req, res) => {
     });
   }
 
-  const messagesStore = await PrivateMessage.find({
- chatId
-});
+  const messagesStore = loadPrivateMessages();
 
-const messages = await PrivateMessage.find({
- chatId
-}).sort({ timestamp:1 });
-
-res.json({
- success:true,
- messages
-});
+  res.json({
+    success: true,
+    chatId,
+    messages: messagesStore[chatId] || [],
+    isEmpty: !(messagesStore[chatId] && messagesStore[chatId].length > 0),
+  });
 });
 
 
@@ -975,10 +965,10 @@ app.listen(PORT, "0.0.0.0", () => {
 
 
 // ✅ FIXED: ROOMMATE POST - Now stores poster_user_id
-app.post("/roommate-post",authenticateToken, async (req, res)=> {
+app.post("/roommate-post", authenticateToken, (req, res) => {
   const { name, message, gender, phone, email } = req.body;
 
-const post = await Post.findOne({ id });
+  const posts = loadPosts();
 
   const newPost = {
     id: uuidv4(),
@@ -994,21 +984,13 @@ const post = await Post.findOne({ id });
   };
 
   posts.push(newPost);
-  await Post.updateOne(
-  { id: postId },
-  {
-    $set: {
-      ...updated,
-      updatedAt: new Date().toISOString()
-    }
-  }
-);
+  savePosts(posts);
 
   res.json({ success: true });
 });
 
 // ✅ FIXED: DELETE MY ROOMMATE POST - Backward compatible
-app.delete("/my-roommate-post/:postId",authenticateToken, async (req, res)=> {
+app.delete("/my-roommate-post/:postId", authenticateToken, (req, res) => {
   const { postId } = req.params;
 
 
@@ -1017,7 +999,7 @@ app.delete("/my-roommate-post/:postId",authenticateToken, async (req, res)=> {
   }
 
 
-  const posts = await Post.find();
+  const posts = loadPosts();
   const postIndex = posts.findIndex(
     (p) => p.id === postId && p.type === "roommate" && getPosterUserId(p) === req.user.id // ✅ Backward compatible
   );
@@ -1031,10 +1013,9 @@ app.delete("/my-roommate-post/:postId",authenticateToken, async (req, res)=> {
   }
 
 
-  await Post.deleteOne({
- id: postId,
- poster_user_id: req.user.id
-});
+  posts.splice(postIndex, 1);
+  savePosts(posts);
+
 
   console.log(`✅ DELETED ROOMMATE POST: ${postId} by user ${req.user.id}`);
 
@@ -1048,9 +1029,16 @@ app.delete("/my-roommate-post/:postId",authenticateToken, async (req, res)=> {
 
 
 // ✅ FIXED: EDIT MY ROOMMATE POST - Backward compatible
-app.patch("/my-roommate-post/:postId",authenticateToken, async (req, res)=> {
+app.patch("/my-roommate-post/:postId", authenticateToken, (req, res) => {
   const { postId } = req.params;
   const updated = req.body;
+
+
+  const posts = loadPosts();
+  const postIndex = posts.findIndex(
+    (p) => p.id === postId && p.type === "roommate" && getPosterUserId(p) === req.user.id // ✅ Backward compatible
+  );
+
 
   if (postIndex === -1) {
     return res.status(404).json({
@@ -1058,6 +1046,8 @@ app.patch("/my-roommate-post/:postId",authenticateToken, async (req, res)=> {
       message: "Roommate post not found or you don't have permission to edit it",
     });
   }
+
+
   posts[postIndex] = {
     ...posts[postIndex],
     ...updated,
@@ -1065,15 +1055,7 @@ app.patch("/my-roommate-post/:postId",authenticateToken, async (req, res)=> {
   };
 
 
-  await Post.updateOne(
-  { id: postId },
-  {
-    $set: {
-      ...updated,
-      updatedAt: new Date().toISOString()
-    }
-  }
-);
+  savePosts(posts);
 
 
   res.json({
@@ -1084,13 +1066,13 @@ app.patch("/my-roommate-post/:postId",authenticateToken, async (req, res)=> {
 
 
 // ✅ FIXED: REPLY TO ROOMMATE POST - Backward compatible + Chat link
-app.post("/roommate-reply",authenticateToken, async (req, res)=> {
+app.post("/roommate-reply", authenticateToken, (req, res) => {
   const { postId, replyMessage } = req.body;
 
 
   console.log("🔍 DEBUG - postId:", postId);
   
-  const posts = await Post.find();
+  const posts = loadPosts();
   const post = posts.find((p) => p.id === postId);
   
   console.log("🔍 DEBUG - found post:", post);
@@ -1110,15 +1092,7 @@ app.post("/roommate-reply",authenticateToken, async (req, res)=> {
 
 
 
-  await Post.updateOne(
-  { id: postId },
-  {
-    $set: {
-      ...updated,
-      updatedAt: new Date().toISOString()
-    }
-  }
-);
+  savePosts(posts);
   res.json({
     success: true,
     chatLink: `${BASE_URL}/ROOMMATE-REPLY.HTML.html?chatId=${req.user.id}_${getPosterUserId(post)}_${postId}`,
@@ -1127,12 +1101,12 @@ app.post("/roommate-reply",authenticateToken, async (req, res)=> {
 
 
 // ✅ GET SINGLE POST BY ID (Room / Roommate) - Frontend needs this
-app.get("/posts/:id",authenticateToken, async (req, res)=> {
+app.get("/posts/:id", authenticateToken, (req, res) => {
   try {
     const { id } = req.params;
 
 
-    const posts = await Post.find();
+    const posts = loadPosts();
     const post = posts.find((p) => p.id === id);
 
 
@@ -1249,7 +1223,7 @@ app.get("/admin-data", (req, res) => {
   res.json(sortedRooms);
 });
 
-app.delete("/delete-room/:id",authenticateToken, async (req, res)=> {
+app.delete("/delete-room/:id", authenticateToken, (req, res) => {
 
   const { id } = req.params;
 
@@ -1271,15 +1245,7 @@ app.delete("/delete-room/:id",authenticateToken, async (req, res)=> {
 
   posts.splice(index, 1);
 
-  await Post.updateOne(
-  { id: postId },
-  {
-    $set: {
-      ...updated,
-      updatedAt: new Date().toISOString()
-    }
-  }
-);
+  savePosts(posts);
 
   res.json({
     success: true,
@@ -1301,15 +1267,7 @@ app.patch("/toggle-room/:id", (req, res) => {
 
   posts[index].hidden = !posts[index].hidden;
 
-  await Post.updateOne(
-  { id: postId },
-  {
-    $set: {
-      ...updated,
-      updatedAt: new Date().toISOString()
-    }
-  }
-);
+  savePosts(posts);
 
   res.json({
     success: true,
@@ -1342,15 +1300,7 @@ app.patch("/edit-room/:id", (req, res) => {
     updatedAt: new Date().toISOString()
   };
 
-  await Post.updateOne(
-  { id: postId },
-  {
-    $set: {
-      ...updated,
-      updatedAt: new Date().toISOString()
-    }
-  }
-);
+  savePosts(posts);
 
   res.json({
     success: true,
@@ -1370,15 +1320,7 @@ app.patch("/roommate-hide/:id", (req, res) => {
     return res.status(404).json({ success: false, message: "Roommate post not found" });
   }
   posts[idx].hidden = !!hidden;
-  await Post.updateOne(
-  { id: postId },
-  {
-    $set: {
-      ...updated,
-      updatedAt: new Date().toISOString()
-    }
-  }
-);
+  savePosts(posts);
   res.json({ success: true, hidden: posts[idx].hidden });
 });
 
@@ -1396,15 +1338,7 @@ app.patch("/roommate-edit/:id", (req, res) => {
     ...updated,
     updatedAt: new Date().toISOString(),
   };
-  await Post.updateOne(
-  { id: postId },
-  {
-    $set: {
-      ...updated,
-      updatedAt: new Date().toISOString()
-    }
-  }
-);
+  savePosts(posts);
   res.json({ success: true });
 });
 // GET ALL ROOM POSTS (PUBLIC LISTING)
