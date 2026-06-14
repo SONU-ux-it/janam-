@@ -6,7 +6,8 @@
 
 
 
- "name": "roommate-backend",
+
+"name": "roommate-backend",
   
 
 
@@ -14,7 +15,8 @@
 
 
 
- "version": "1.0.0",
+
+"version": "1.0.0",
   
 
 
@@ -22,7 +24,8 @@
 
 
 
- "description": "Find a Roommate backend - Udaipur Room Finding App",
+
+"description": "Find a Roommate backend - Udaipur Room Finding App",
   
 
 
@@ -30,7 +33,8 @@
 
 
 
- "main": "server.js",
+
+"main": "server.js",
   
 
 
@@ -38,7 +42,8 @@
 
 
 
- "type": "commonjs",
+
+"type": "commonjs",
   
 
 
@@ -46,7 +51,8 @@
 
 
 
- "scripts": {
+
+"scripts": {
   
 
 
@@ -54,14 +60,7 @@
 
 
 
-   
 
-
-
-
-
-
- "start": "node server.js",
   
 
 
@@ -69,14 +68,8 @@
 
 
 
-   
 
-
-
-
-
-
- "dev": "nodemon server.js",
+"start": "node server.js",
   
 
 
@@ -84,14 +77,7 @@
 
 
 
-   
 
-
-
-
-
-
- "test": "echo \"No tests specified\" && exit 0"
   
 
 
@@ -99,7 +85,8 @@
 
 
 
- },
+
+"dev": "nodemon server.js",
   
 
 
@@ -107,7 +94,7 @@
 
 
 
- "author": "Sonu Acharya <sonu@example.com>",
+
   
 
 
@@ -115,7 +102,8 @@
 
 
 
- "license": "MIT",
+
+"test": "echo \"No tests specified\" && exit 0"
   
 
 
@@ -123,7 +111,8 @@
 
 
 
- "repository": {
+
+},
   
 
 
@@ -131,14 +120,8 @@
 
 
 
-   
 
-
-
-
-
-
- "type": "git",
+"author": "Sonu Acharya <sonu@example.com>",
   
 
 
@@ -146,14 +129,8 @@
 
 
 
-   
 
-
-
-
-
-
- "url": "https://github.com/SONU-ux-it/backend.git"
+"license": "MIT",
   
 
 
@@ -161,7 +138,8 @@
 
 
 
- },
+
+"repository": {
   
 
 
@@ -169,7 +147,7 @@
 
 
 
- "keywords": [
+
   
 
 
@@ -177,14 +155,8 @@
 
 
 
-   
 
-
-
-
-
-
- "roommate",
+"type": "git",
   
 
 
@@ -192,14 +164,7 @@
 
 
 
-   
 
-
-
-
-
-
- "real-estate",
   
 
 
@@ -207,14 +172,8 @@
 
 
 
-   
 
-
-
-
-
-
- "backend",
+"url": "https://github.com/SONU-ux-it/backend.git"
   
 
 
@@ -222,14 +181,8 @@
 
 
 
-   
 
-
-
-
-
-
- "express",
+},
   
 
 
@@ -237,14 +190,8 @@
 
 
 
-   
 
-
-
-
-
-
- "nodejs",
+"keywords": [
   
 
 
@@ -252,14 +199,7 @@
 
 
 
-   
 
-
-
-
-
-
- "udaipur"
   
 
 
@@ -267,7 +207,8 @@
 
 
 
- ],
+
+"roommate",
   
 
 
@@ -275,7 +216,7 @@
 
 
 
- "bugs": {
+
   
 
 
@@ -283,14 +224,8 @@
 
 
 
-   
 
-
-
-
-
-
- "url": "https://github.com/SONU-ux-it/backend/issues"
+"real-estate",
   
 
 
@@ -298,7 +233,7 @@
 
 
 
- },
+
   
 
 
@@ -306,7 +241,8 @@
 
 
 
- "homepage": "https://github.com/SONU-ux-it/backend#readme",
+
+"backend",
   
 
 
@@ -314,7 +250,7 @@
 
 
 
- "engines": {
+
   
 
 
@@ -322,14 +258,8 @@
 
 
 
-   
 
-
-
-
-
-
- "node": ">=18.0.0",
+"express",
   
 
 
@@ -337,14 +267,7 @@
 
 
 
-   
 
-
-
-
-
-
- "npm": ">=9.0.0"
   
 
 
@@ -352,7 +275,8 @@
 
 
 
- },
+
+"nodejs",
   
 
 
@@ -360,7 +284,7 @@
 
 
 
- "dependencies": {
+
   
 
 
@@ -368,14 +292,8 @@
 
 
 
-   
 
-
-
-
-
-
- "axios": "^1.7.2",
+"udaipur"
   
 
 
@@ -383,14 +301,8 @@
 
 
 
-   
 
-
-
-
-
-
- "cors": "^2.8.5",
+],
   
 
 
@@ -398,14 +310,8 @@
 
 
 
-   
 
-
-
-
-
-
- "express": "^4.21.1",
+"bugs": {
   
 
 
@@ -413,14 +319,7 @@
 
 
 
-   
 
-
-
-
-
-
- "mongoose": "^8.24.0",
   
 
 
@@ -428,14 +327,8 @@
 
 
 
-   
 
-
-
-
-
-
- "multer": "^1.4.5-lts.1",
+"url": "https://github.com/SONU-ux-it/backend/issues"
   
 
 
@@ -443,14 +336,8 @@
 
 
 
-   
 
-
-
-
-
-
- "uuid": "^10.0.0"
+},
   
 
 
@@ -458,7 +345,8 @@
 
 
 
- },
+
+"homepage": "https://github.com/SONU-ux-it/backend#readme",
   
 
 
@@ -466,7 +354,8 @@
 
 
 
- "devDependencies": {
+
+"engines": {
   
 
 
@@ -474,14 +363,7 @@
 
 
 
-   
 
-
-
-
-
-
- "nodemon": "^3.1.7"
   
 
 
@@ -489,5 +371,238 @@
 
 
 
- }
+
+"node": ">=18.0.0",
+  
+
+
+
+
+
+
+
+  
+
+
+
+
+
+
+
+"npm": ">=9.0.0"
+  
+
+
+
+
+
+
+
+},
+  
+
+
+
+
+
+
+
+"dependencies": {
+  
+
+
+
+
+
+
+
+  
+
+
+
+
+
+
+
+"axios": "^1.17.0",
+  
+
+
+
+
+
+
+
+  
+
+
+
+
+
+
+
+"bcrypt": "^6.0.0",
+  
+
+
+
+
+
+
+
+  
+
+
+
+
+
+
+
+"cors": "^2.8.6",
+  
+
+
+
+
+
+
+
+  
+
+
+
+
+
+
+
+"dotenv": "^17.4.2",
+  
+
+
+
+
+
+
+
+  
+
+
+
+
+
+
+
+"express": "^4.22.2",
+  
+
+
+
+
+
+
+
+  
+
+
+
+
+
+
+
+"jsonwebtoken": "^9.0.3",
+  
+
+
+
+
+
+
+
+  
+
+
+
+
+
+
+
+"mongoose": "^8.24.0",
+  
+
+
+
+
+
+
+
+  
+
+
+
+
+
+
+
+"multer": "^1.4.5-lts.1",
+  
+
+
+
+
+
+
+
+  
+
+
+
+
+
+
+
+"uuid": "^10.0.0"
+  
+
+
+
+
+
+
+
+},
+  
+
+
+
+
+
+
+
+"devDependencies": {
+  
+
+
+
+
+
+
+
+  
+
+
+
+
+
+
+
+"nodemon": "^3.1.7"
+  
+
+
+
+
+
+
+
+}
 }
