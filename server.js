@@ -1,3 +1,5 @@
+require("dotenv").config();
+
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
@@ -5,1403 +7,1535 @@ const cors = require("cors");
 const { v4: uuidv4 } = require("uuid");
 const multer = require("multer");
 const axios = require("axios");
+const mongoose = require("mongoose");
+const dns = require("dns");
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcrypt");
 
+dns.setServers(["8.8.8.8", "8.8.4.4"]);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
+const MONGO_URI = process.env.MONGO_URI;
+const JWT_SECRET = process.env.JWT_SECRET;
+const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
+if (!MONGO_URI || !JWT_SECRET || !IMGBB_API_KEY || !ADMIN_USERNAME || !ADMIN_PASSWORD) {
+  console.error("❌ Missing required environment variables");
+  process.exit(1);
+}
+
+mongoose
+  .connect(MONGO_URI, { dbName: "findnearroom" })
+  .then(() => console.log("✅ MongoDB Connected"))
+  .catch((err) => {
+    console.error("❌ MongoDB Error:", err.message);
+    process.exit(1);
+  });
 
 // ================== ERROR HANDLING ==================
 process.on("uncaughtException", (err) => logDetailedError("Uncaught Exception", err));
 process.on("unhandledRejection", (reason) => logDetailedError("Unhandled Rejection", reason));
 
-
 function logDetailedError(type, err) {
-  console.error(`\n===== ${type} =====`);
-  if (err && err.stack) {
-    const stackLines = err.stack.split("\n");
-    console.error(stackLines[0]);
-    const fileLine = stackLines.find((line) => line.includes(".js"));
-    if (fileLine) console.error("Error Location:", fileLine.trim());
-  } else {
-    console.error(err);
-  }
-  console.error("=================================================\n");
+  console.error(`\n===== ${type} =====`);
+  if (err && err.stack) {
+    const stackLines = err.stack.split("\n");
+    console.error(stackLines[0]);
+    const fileLine = stackLines.find((line) => line.includes(".js"));
+    if (fileLine) console.error("Error Location:", fileLine.trim());
+  } else {
+    console.error(err);
+  }
+  console.error("=================================================\n");
 }
 
-
-// 👇 ImgBB API key
-const IMGBB_API_KEY = "9a995e9e45e2bd450029bd6cdafe22c3";
-
-
-// ✅ FIXED Multer setup - Handle empty files properly
-const upload = multer({
-  dest: path.join(__dirname, "tmp_uploads/"),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB per file
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) {
-      cb(null, true);
-    } else {
-      cb(new Error("Only image files allowed"), false);
-    }
-  },
-});
-
-
 // ---------- Middleware ----------
-app.use(
-  cors({
-    origin: "*",
-  })
-);
+app.use(cors({ origin: "*" }));
 app.use(express.json({ limit: "20mb" }));
 app.use(express.urlencoded({ extended: true, limit: "20mb" }));
 
-
-// Serve static files
 const PUBLIC_DIR = path.join(__dirname, "public");
 if (fs.existsSync(PUBLIC_DIR)) app.use(express.static(PUBLIC_DIR));
 
-
-// ✅ AUTHENTICATION MIDDLEWARE (NEW - REUSABLE)
-function authenticateToken(req, res, next) {
-  const auth = req.headers.authorization || "";
-  const parts = auth.split(" ");
-
-
-  if (parts.length !== 2 || parts[0] !== "Bearer") {
-    return res.status(401).json({ success: false, message: "No token provided" });
-  }
-
-
-  const token = parts[1];
-  const userId = token.split(":")[0];
-
-
-  const users = loadUsers();
-  const user = users.find((u) => u.id === userId);
-
-
-  if (!user) {
-    return res.status(401).json({ success: false, message: "Invalid token" });
-  }
-
-
-  req.user = user;
-  next();
-}
-
-
-// ✅ HELPER FUNCTION: Get poster user ID (backward compatible)
-function getPosterUserId(post) {
-  return post.poster_user_id || post.posteruserid || null;
-}
-
-
-// ✅ NEW HELPER: Parse chatId safely (supports "_" or "|" as delimiter)
-function parseChatId(chatId) {
-  if (!chatId || typeof chatId !== "string") return null;
-
-
-  // Only "_" delimiter (frontend uses underscore)
-  if (!chatId.includes("_")) return null;
-
-
-  const parts = chatId.split("_");
-  if (parts.length !== 3) return null; // Exactly 3 parts: user1_user2_postId
-
-
-  const user1 = parts[0];
-  const user2 = parts[1];
-  const postId = parts[2];
-
-
-  if (!user1 || !user2 || !postId) return null;
-
-
-  return { user1, user2, postId, delimiter: "_" };
-}
-
-
-// ✅ NEW HELPER: Check chat access + find other user
-function getChatAccessInfo(chatId, currentUserId) {
-  const parsed = parseChatId(chatId);
-  if (!parsed) return { ok: false, reason: "Invalid chatId format" };
-
-
-  const { user1, user2, postId } = parsed;
-  if (user1 !== currentUserId && user2 !== currentUserId) {
-    return { ok: false, reason: "You do not have access to this chat" };
-  }
-
-
-  const otherUserId = user1 === currentUserId ? user2 : user1;
-  return { ok: true, user1, user2, postId, otherUserId };
-}
-
-
-// ---------- Data Storage ----------
-const POSTS_FILE = path.join(__dirname, "posts.json");
-const CHAT_FILE = path.join(__dirname, "roommate-reply.json");
-const USERS_FILE = path.join(__dirname, "users.json");
-const WISHLIST_FILE = path.join(__dirname, "wishlist.json");
-const PRIVATE_MESSAGES_FILE = path.join(__dirname, "private-messages.json"); // ✅ NEW: Private messages
-
-
-function loadPosts() {
-  if (!fs.existsSync(POSTS_FILE)) return [];
-  try {
-    return JSON.parse(fs.readFileSync(POSTS_FILE, "utf-8") || "[]");
-  } catch (e) {
-    console.error("Error reading posts.json:", e);
-    return [];
-  }
-}
-function savePosts(posts) {
-  fs.writeFileSync(POSTS_FILE, JSON.stringify(posts, null, 2));
-}
-
-function loadChats() {
-  if (!fs.existsSync(CHAT_FILE)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(CHAT_FILE, "utf-8") || "{}");
-  } catch (e) {
-    console.error("Error reading chats file:", e);
-    return {};
-  }
-}
-function saveChats(chats) {
-  fs.writeFileSync(CHAT_FILE, JSON.stringify(chats, null, 2));
-}
-
-
-function loadUsers() {
-  if (!fs.existsSync(USERS_FILE)) return [];
-  try {
-    return JSON.parse(fs.readFileSync(USERS_FILE, "utf-8") || "[]");
-  } catch (e) {
-    console.error("Error reading users.json:", e);
-    return [];
-  }
-}
-function saveUsers(users) {
-  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
-}
-
-
-// ✅ Wishlist Functions
-function loadWishlist() {
-  if (!fs.existsSync(WISHLIST_FILE)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(WISHLIST_FILE, "utf-8") || "{}");
-  } catch (e) {
-    console.error("Error reading wishlist.json:", e);
-    return {};
-  }
-}
-function saveWishlist(wishlist) {
-  fs.writeFileSync(WISHLIST_FILE, JSON.stringify(wishlist, null, 2));
-}
-
-
-// ✅ NEW: Private Messages Functions
-function loadPrivateMessages() {
-  if (!fs.existsSync(PRIVATE_MESSAGES_FILE)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(PRIVATE_MESSAGES_FILE, "utf-8") || "{}");
-  } catch (e) {
-    console.error("Error reading private-messages.json:", e);
-    return {};
-  }
-}
-function savePrivateMessages(messages) {
-  fs.writeFileSync(PRIVATE_MESSAGES_FILE, JSON.stringify(messages, null, 2));
-}
-
-
-// ensure tmp_uploads exists
 const TMP_DIR = path.join(__dirname, "tmp_uploads");
 if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR);
 
+const upload = multer({
+  dest: TMP_DIR,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith("image/")) cb(null, true);
+    else cb(new Error("Only image files allowed"), false);
+  },
+});
 
-// ========= ImgBB Upload Helper =========
-async function uploadFileToImgBB(localPath) {
-  try {
-    const fileBuffer = fs.readFileSync(localPath);
-    const base64Image = fileBuffer.toString("base64");
+// ================== SCHEMAS ==================
+const UserSchema = new mongoose.Schema(
+  {
+    id: { type: String, required: true, unique: true, index: true, immutable: true },
+    name: { type: String, required: true, trim: true },
+    email: {
+      type: String,
+      required: true,
+      unique: true,
+      index: true,
+      trim: true,
+      lowercase: true,
+    },
+    phone: { type: String, required: true, unique: true, index: true, trim: true },
+    password: { type: String, required: true, select: false },
+    role: { type: String, enum: ["user", "admin"], default: "user", index: true },
+    createdAt: { type: String, default: () => new Date().toISOString(), immutable: true },
+  },
+  { versionKey: false }
+);
 
+const PostSchema = new mongoose.Schema(
+  {
+    id: { type: String, required: true, unique: true, index: true, immutable: true },
+    type: { type: String, enum: ["room", "roommate"], required: true, index: true, immutable: true },
+    hidden: { type: Boolean, default: false, index: true },
 
-    const formData = new URLSearchParams();
-    formData.append("key", IMGBB_API_KEY);
-    formData.append("image", base64Image);
+    name: { type: String, trim: true },
+    phone: { type: String, trim: true },
+    email: { type: String, trim: true, lowercase: true },
+    gender: { type: String, trim: true, lowercase: true },
+    message: { type: String, trim: true },
 
+    location: { type: String, trim: true, index: true },
+    rent_by_person: mongoose.Schema.Types.Mixed,
+    deposit: { type: String, trim: true },
+    room_type: { type: String, trim: true, lowercase: true, index: true },
+    available_from: { type: String, trim: true },
+    facilities: mongoose.Schema.Types.Mixed,
+    map_link: { type: String, trim: true },
+    imageLinks: { type: [String], default: [] },
 
-    const response = await axios.post("https://api.imgbb.com/1/upload", formData, {
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      timeout: 120000,
-    });
+    poster_user_id: { type: String, index: true, immutable: true },
+    posteruserid: { type: String, immutable: true },
 
+    timestamp: { type: String, default: () => new Date().toISOString(), index: true, immutable: true },
+    updatedAt: String,
+  },
+  { strict: true, versionKey: false }
+);
 
-    fs.unlink(localPath, () => {});
+const WishlistSchema = new mongoose.Schema(
+  {
+    userId: { type: String, index: true },
+    postId: { type: String, index: true },
+    createdAt: { type: String, default: () => new Date().toISOString() },
+  },
+  { versionKey: false }
+);
+WishlistSchema.index({ userId: 1, postId: 1 }, { unique: true });
 
+const PrivateMessageSchema = new mongoose.Schema(
+  {
+    chatId: { type: String, index: true },
+    senderId: { type: String, index: true },
+    senderName: String,
+    senderPhone: String,
+    receiverId: { type: String, index: true },
+    postId: { type: String, index: true },
+    message: { type: String, required: true, trim: true },
+    timestamp: { type: String, default: () => new Date().toISOString(), index: true },
+    read: { type: Boolean, default: false },
+  },
+  { versionKey: false }
+);
 
-    if (!response.data || !response.data.data || !response.data.data.url) {
-      throw new Error("ImgBB upload failed: no URL returned");
-    }
+const LegacyChatSchema = new mongoose.Schema(
+  {
+    postId: { type: String, index: true },
+    senderName: String,
+    senderEmail: String,
+    message: String,
+    timestamp: { type: String, default: () => new Date().toISOString() },
+  },
+  { versionKey: false }
+);
 
+PostSchema.index({ type: 1, hidden: 1, gender: 1, room_type: 1, timestamp: -1 });
+PostSchema.index({ type: 1, hidden: 1, poster_user_id: 1, timestamp: -1 });
+PrivateMessageSchema.index({ chatId: 1, timestamp: 1 });
 
-    return response.data.data.url;
-  } catch (err) {
-    try {
-      fs.unlinkSync(localPath);
-    } catch {}
-    console.error("Error while uploading to ImgBB:", err.message);
-    throw err;
-  }
+const User = mongoose.model("User", UserSchema);
+const Post = mongoose.model("Post", PostSchema);
+const Wishlist = mongoose.model("Wishlist", WishlistSchema);
+const PrivateMessage = mongoose.model("PrivateMessage", PrivateMessageSchema);
+const LegacyChat = mongoose.model("LegacyChat", LegacyChatSchema);
+
+// ================== HELPERS ==================
+function normalizeEmail(email = "") {
+  return String(email).trim().toLowerCase();
 }
 
+function normalizePhone(phone = "") {
+  return String(phone).trim();
+}
+
+function getPosterUserId(post) {
+  return post?.poster_user_id || post?.posteruserid || null;
+}
+
+function buildNormalizedChatId(userA, userB, postId) {
+  const ids = [String(userA), String(userB)].sort();
+  return `${ids[0]}_${ids[1]}_${postId}`;
+}
+
+function parseChatId(chatId) {
+  if (!chatId || typeof chatId !== "string") return null;
+  if (!chatId.includes("_")) return null;
+
+  const parts = chatId.split("_");
+  if (parts.length !== 3) return null;
+
+  const [user1, user2, postId] = parts;
+  if (!user1 || !user2 || !postId) return null;
+
+  return { user1, user2, postId };
+}
+
+function getChatAccessInfo(chatId, currentUserId) {
+  const parsed = parseChatId(chatId);
+  if (!parsed) return { ok: false, reason: "Invalid chatId format" };
+
+  const { user1, user2, postId } = parsed;
+  if (user1 !== currentUserId && user2 !== currentUserId) {
+    return { ok: false, reason: "You do not have access to this chat" };
+  }
+
+  const otherUserId = user1 === currentUserId ? user2 : user1;
+  return { ok: true, user1, user2, postId, otherUserId };
+}
+
+function buildRoomQuery(query) {
+  const mongoQuery = {
+    type: "room",
+    hidden: { $ne: true },
+  };
+
+  if (query.city) {
+    mongoQuery.location = { $regex: String(query.city).trim(), $options: "i" };
+  }
+
+  if (query.type) {
+    mongoQuery.room_type = { $regex: String(query.type).trim(), $options: "i" };
+  }
+
+  if (query.gender) {
+    const g = String(query.gender).trim().toLowerCase();
+    if (g === "boys" || g === "girls") {
+      mongoQuery.gender = { $in: [g, "both"] };
+    } else {
+      mongoQuery.gender = { $regex: `^${g}$`, $options: "i" };
+    }
+  }
+
+  return mongoQuery;
+}
+
+function getMinimumRentValue(value) {
+  try {
+    if (typeof value === "object" && value !== null) {
+      const values = Object.values(value)
+        .map((v) => parseInt(String(v).replace(/\D/g, "")))
+        .filter((v) => !isNaN(v));
+      return values.length ? Math.min(...values) : NaN;
+    }
+    return parseInt(String(value || "").replace(/\D/g, ""));
+  } catch {
+    return NaN;
+  }
+}
+
+function pickAllowedFields(source, allowedFields) {
+  const output = {};
+  for (const key of allowedFields) {
+    if (Object.prototype.hasOwnProperty.call(source, key)) {
+      output[key] = source[key];
+    }
+  }
+  return output;
+}
+
+function validateRoomPayload(body) {
+  const requiredFields = ["name", "phone", "email", "room_type", "gender", "location"];
+  for (const field of requiredFields) {
+    if (!String(body[field] || "").trim()) {
+      return `${field} is required`;
+    }
+  }
+  return null;
+}
+
+function validateRoommatePayload(body) {
+  const requiredFields = ["name", "message", "gender", "phone", "email"];
+  for (const field of requiredFields) {
+    if (!String(body[field] || "").trim()) {
+      return `${field} is required`;
+    }
+  }
+  return null;
+}
+
+async function authenticateToken(req, res, next) {
+  try {
+    const auth = req.headers.authorization || "";
+    const parts = auth.split(" ");
+
+    if (parts.length !== 2 || parts[0] !== "Bearer") {
+      return res.status(401).json({ success: false, message: "No token provided" });
+    }
+
+    const token = parts[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    if (decoded.role === "admin") {
+      req.user = {
+        id: decoded.id || null,
+        username: decoded.username,
+        role: "admin",
+        isAdmin: true,
+      };
+      return next();
+    }
+
+    if (!decoded.id) {
+      return res.status(401).json({ success: false, message: "Invalid token payload" });
+    }
+
+    const user = await User.findOne({ id: decoded.id }).select("id name email phone role");
+    if (!user) {
+      return res.status(401).json({ success: false, message: "Invalid token" });
+    }
+
+    req.user = {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role || "user",
+      isAdmin: user.role === "admin",
+    };
+
+    next();
+  } catch (err) {
+    return res.status(401).json({ success: false, message: "Invalid or expired token" });
+  }
+}
+
+function requireAdmin(req, res, next) {
+  if (!req.user || req.user.role !== "admin") {
+    return res.status(403).json({ success: false, message: "Admin access required" });
+  }
+  next();
+}
+
+async function uploadFileToImgBB(localPath) {
+  try {
+    const fileBuffer = fs.readFileSync(localPath);
+    const base64Image = fileBuffer.toString("base64");
+
+    const formData = new URLSearchParams();
+    formData.append("key", IMGBB_API_KEY);
+    formData.append("image", base64Image);
+
+    const response = await axios.post("https://api.imgbb.com/1/upload", formData, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      timeout: 120000,
+    });
+
+    fs.unlink(localPath, () => {});
+
+    if (!response.data?.data?.url) {
+      throw new Error("ImgBB upload failed: no URL returned");
+    }
+
+    return response.data.data.url;
+  } catch (err) {
+    try {
+      fs.unlinkSync(localPath);
+    } catch {}
+    console.error("Error while uploading to ImgBB:", err.message);
+    throw err;
+  }
+}
 
 // ================= ROUTES =================
 
-
-// ✅ USER REGISTER - CORRECT ENDPOINT
-app.post("/user-register", (req, res) => {
-  const { name, email, phone, password } = req.body;
-
-
-  if (!name || !email || !phone || !password) {
-    return res.status(400).json({ success: false, message: "All fields are required" });
-  }
-
-
-  const users = loadUsers();
-
-
-  const existing = users.find((u) => u.email === email || u.phone === phone);
-  if (existing) {
-    return res.status(409).json({ success: false, message: "Email or phone already registered" });
-  }
-
-
-  const newUser = {
-    id: uuidv4(),
-    name,
-    email,
-    phone,
-    password,
-    createdAt: new Date().toISOString(),
-  };
-
-
-  users.push(newUser);
-  saveUsers(users);
-
-
-  res.json({
-    success: true,
-    user: {
-      id: newUser.id,
-      name: newUser.name,
-      email: newUser.email,
-      phone: newUser.phone,
-    },
-  });
-});
-
-
-// ✅ USER LOGIN - CORRECT ENDPOINT
-app.post("/user-login", (req, res) => {
-  const { emailOrPhone, password } = req.body;
-
-
-  if (!emailOrPhone || !password) {
-    return res
-      .status(400)
-      .json({ success: false, message: "Email / phone and password required" });
-  }
-
-
-  const users = loadUsers();
-
-
-  const user = users.find(
-    (u) =>
-      (u.email === emailOrPhone || u.phone === emailOrPhone) && u.password === password
-  );
-
-
-  if (!user) {
-    return res.status(401).json({ success: false, message: "Invalid credentials" });
-  }
-
-
-  const token = `${user.id}:${Date.now()}`;
-
-
-  res.json({
-    success: true,
-    token,
-    user: {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      phone: user.phone,
-    },
-  });
-});
-
-
-// ✅ CURRENT USER - FIXED WITH MIDDLEWARE
-app.get("/me", authenticateToken, (req, res) => {
-  res.json({
-    success: true,
-    user: req.user,
-  });
-});
-
-
-// ✅======================= WISHLIST ROUTES =======================✅
-// 16. ADD TO WISHLIST
-app.post("/wishlist/add", authenticateToken, (req, res) => {
-  const { postId } = req.body;
-
-
-  if (!postId) {
-    return res.status(400).json({ success: false, message: "postId is required" });
-  }
-
-
-  const wishlist = loadWishlist();
-  const posts = loadPosts();
-  const post = posts.find((p) => p.id === postId && p.type === "room");
-
-
-
-
-  if (!wishlist[req.user.id]) {
-    wishlist[req.user.id] = [];
-  }
-
-
-  // Check if already in wishlist
-  const exists = wishlist[req.user.id].some((id) => id === postId);
-  if (exists) {
-    return res.status(409).json({
-      success: false,
-      message: "Room already in wishlist",
-    });
-  }
-
-
-  wishlist[req.user.id].push(postId);
-  saveWishlist(wishlist);
-
-
-  res.json({
-    success: true,
-    message: "Added to wishlist",
-    postId,
-    total: wishlist[req.user.id].length,
-  });
-});
-
-
-// 17. REMOVE FROM WISHLIST
-app.post("/wishlist/remove", authenticateToken, (req, res) => {
-  const { postId } = req.body;
-
-
-  if (!postId) {
-    return res.status(400).json({ success: false, message: "postId is required" });
-  }
-
-
-  const wishlist = loadWishlist();
-
-
-
-  const initialLength = wishlist[req.user.id].length;
-  wishlist[req.user.id] = wishlist[req.user.id].filter((id) => id !== postId);
-
-
-  // Clean up empty user wishlist
-  if (wishlist[req.user.id].length === 0) {
-    delete wishlist[req.user.id];
-  }
-
-
-  saveWishlist(wishlist);
-
-
-  res.json({
-    success: true,
-    message: "Removed from wishlist",
-    postId,
-    total: wishlist[req.user.id]?.length || 0,
-  });
-});
-
-
-// 18. GET USER WISHLIST
-app.get("/wishlist", authenticateToken, (req, res) => {
-  const wishlist = loadWishlist();
-  const wishlistIds = wishlist[req.user.id] || [];
-
-
-  const posts = loadPosts();
-  const wishlistPosts = posts
-    .filter((p) => p.type === "room" && wishlistIds.includes(p.id))
-    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-    .map((post) => ({
-      ...post,
-      isInWishlist: true,
-    }));
-
-
-  res.json({
-    success: true,
-    wishlist: wishlistPosts,
-    total: wishlistPosts.length,
-  });
-});
-
-
-// 19. CHECK IF POST IS IN WISHLIST
-app.get("/wishlist/:postId", authenticateToken, (req, res) => {
-  const { postId } = req.params;
-
-
-  const wishlist = loadWishlist();
-  const isInWishlist = wishlist[req.user.id]?.includes(postId) || false;
-
-
-  res.json({
-    success: true,
-    postId,
-    isInWishlist,
-  });
-});
-
-
-// ✅======================= END WISHLIST ROUTES =======================✅
-
-
-// 🚨 ✅ FIXED: DELETE MY ROOM - SUPPORTS BOTH FIELD NAMES
-app.delete("/my-room/:postId", authenticateToken, (req, res) => {
-  const { postId } = req.params;
-
-
-  if (!postId) {
-    return res.status(400).json({ success: false, message: "postId is required" });
-  }
-
-
-  const posts = loadPosts();
-
-
-  // ✅ FIX: Checks both 'poster_user_id' AND 'posteruserid' to avoid 404 on old posts
-  const postIndex = posts.findIndex(
-    (p) => p.id === postId && p.type === "room" && getPosterUserId(p) === req.user.id
-  );
-
-
-  if (postIndex === -1) {
-    return res.status(404).json({
-      success: false,
-      message: "Room post not found or you don't have permission to delete it",
-    });
-  }
-
-
-  // Remove from all users' wishlists
-  const wishlist = loadWishlist();
-  Object.keys(wishlist).forEach((userId) => {
-    if (wishlist[userId]) {
-      wishlist[userId] = wishlist[userId].filter((id) => id !== postId);
-      if (wishlist[userId].length === 0) {
-        delete wishlist[userId];
-      }
-    }
-  });
-  saveWishlist(wishlist);
-
-
-  // Delete the post
-  posts.splice(postIndex, 1);
-  savePosts(posts);
-
-
-  console.log(`✅ DELETED ROOM: ${postId} by user ${req.user.id}`);
-
-
-  res.json({
-    success: true,
-    message: "Room post deleted successfully",
-    postId,
-  });
-});
-
-
-// ✅ FIXED POST ROOM - PERFECTLY MATCHES FRONTEND FormData
-app.post("/post-room", authenticateToken, upload.array("photos", 12), async (req, res) => {
-  try {
-    console.log("BODY =", req.body);
-console.log("FILES =", req.files);
-console.log("BODY KEYS =", Object.keys(req.body)
-    );
-
-
-    const {
-      name,
-      phone,
-      email,
-      room_type,
-      gender,
-      facilities,
-      deposit,
-      available_from,
-      location,
-      map_link,
-      rent_by_person,
-    } = req.body;
-
-
-    let imageLinks = [];
-
-
-    // ✅ Handle JSON rent_by_person from frontend
-    let parsedRentByPerson = rent_by_person || "";
-    try {
-      if (typeof rent_by_person === "string") {
-        parsedRentByPerson = JSON.parse(rent_by_person);
-      }
-    } catch (e) {
-      console.log("Rent parsing failed, using string:", rent_by_person);
-    }
-
-
-    // ✅ Upload files if present
-    if (req.files && req.files.length > 0) {
-      console.log(`📸 Uploading ${req.files.length} images to ImgBB...`);
-      for (const file of req.files) {
-        try {
-          const url = await uploadFileToImgBB(file.path);
-          imageLinks.push(url);
-          console.log("✅ Image uploaded:", url);
-        } catch (uploadErr) {
-          console.error("❌ Image upload failed:", uploadErr.message);
-        }
-      }
-    }
-
-
-    const newRoom = {
-      id: uuidv4(),
-      name: name || "",
-      phone: phone || "",
-      email: email || "",
-      gender: gender || "",
-      location: location || "",
-      rent_by_person: parsedRentByPerson, // ✅ Properly parsed object/string
-      deposit: deposit || "",
-      room_type: room_type || "",
-      available_from: available_from || "",
-      facilities: facilities || "",
-      map_link: map_link || "",
-      imageLinks,
-      type: "room",
-      poster_user_id: req.user.id, // ✅ Who posted this (consistent field name)
-      poster_name: req.user.name, // ✅ For My Rooms
-      poster_phone: req.user.phone,
-      poster_email: req.user.email,
-      timestamp: new Date().toISOString(),
-    };
-
-
-    const posts = loadPosts();
-    posts.push(newRoom);
-    savePosts(posts);
-
-
-    console.log("✅ Room posted successfully:", newRoom.id);
-
-
-    res.json({
-      success: true,
-      message: "Room posted successfully",
-      links: imageLinks,
-      id: newRoom.id,
-    });
-  } catch (error) {
-    console.error("❌ Error in /post-room:", error);
-    res.status(500).json({
-      success: false,
-      error: error.message || "Server error",
-    });
-  }
-});
-
-
-// ✅ FIXED: MY ROOMS - Backward compatible
-app.get("/my-rooms", authenticateToken, (req, res) => {
-  const posts = loadPosts().filter((p) => p.type === "room" && getPosterUserId(p) === req.user.id);
-  res.json({
-    success: true,
-    rooms: posts.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)),
-  });
-});
-
-
-
-// ✅ FIXED: MY ROOMMATE POSTS - Backward compatible for OLD posts
-app.get("/my-roommate-posts", authenticateToken, (req, res) => {
-  const posts = loadPosts().filter(
-    (p) => p.type === "roommate" && getPosterUserId(p) === req.user.id
-  );
-  res.json({
-    success: true,
-    posts: posts.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)),
-  });
-});
-
-
-// ✅======================= NEW PRIVATE MESSAGING SYSTEM =======================✅
-
-
-// ✅ 1. SEND PRIVATE MESSAGE (Room poster ↔ Reply sender)
-// ✅ UPDATED: Supports BOTH formats (chatId OR targetUserId/postId)
-app.post("/private-message", authenticateToken, (req, res) => {
-  const { targetUserId, postId, message, chatId: incomingChatId } = req.body;
-
-
-  // Common validation
-  if (!message || !String(message).trim()) {
-    return res.status(400).json({
-      success: false,
-      message: "message is required",
-    });
-  }
-
-
-  // ---- Case B (ROOMMATE-REPLY.html): chatId + message ----
-  if (incomingChatId) {
-    console.log(`🔍 DEBUG: Using chatId ${incomingChatId}`);
-    
-    const access = getChatAccessInfo(incomingChatId, req.user.id);
-    if (!access.ok) {
-      console.log(`❌ ACCESS DENIED: ${access.reason}`);
-      return res.status(403).json({ success: false, message: access.reason });
-    }
-
-
-    const messagesStore = loadPrivateMessages();
-    const chatId = incomingChatId;
-
-
-    if (!messagesStore[chatId]) {
-      messagesStore[chatId] = [];
-    }
-
-
-    const newMessage = {
-      senderId: req.user.id,
-      senderName: req.user.name || req.user.phone,
-      senderPhone: req.user.phone || "",
-      receiverId: access.otherUserId,
-      postId: access.postId,
-      message: String(message).trim(),
-      timestamp: new Date().toISOString(),
-      read: false,
-    };
-
-
-    messagesStore[chatId].push(newMessage);
-    savePrivateMessages(messagesStore);
-
-
-    console.log(`💬 MESSAGE via chatId: ${req.user.name} → ${access.otherUserId} (${chatId})`);
-
-
-    return res.json({
-      success: true,
-      message: "Message sent successfully",
-      chatId,
-    });
-  }
-
-
-  // ---- Case A (old): targetUserId + postId + message ----
-  if (!targetUserId || !postId) {
-    return res.status(400).json({
-      success: false,
-      message: "targetUserId, postId, and message required (or send chatId + message)",
-    });
-  }
-
-
-  console.log(`🔍 DEBUG: Creating new chat ${req.user.id}_${targetUserId}_${postId}`);
-
-
-  const messagesStore = loadPrivateMessages();
-  const builtChatId = `${req.user.id}_${targetUserId}_${postId}`;
-
-
-  if (!messagesStore[builtChatId]) {
-    messagesStore[builtChatId] = [];
-  }
-
-
-  const newMessage = {
-    senderId: req.user.id,
-    senderName: req.user.name,
-    senderPhone: req.user.phone,
-    receiverId: targetUserId,
-    postId,
-    message: String(message).trim(),
-    timestamp: new Date().toISOString(),
-    read: false,
-  };
-
-
-  messagesStore[builtChatId].push(newMessage);
-  savePrivateMessages(messagesStore);
-
-
-  console.log(`💬 MESSAGE: ${req.user.name} → ${targetUserId} (post:${postId})`);
-
-
-  return res.json({
-    success: true,
-    message: "Message sent successfully",
-    chatId: builtChatId,
-  });
-});
-
-
-// ✅ UPDATED: /my-chats (WhatsApp style - separate chat per post)
-app.get("/my-chats", authenticateToken, (req, res) => {
-  const messagesStore = loadPrivateMessages();
-  const users = loadUsers();
-  const chatsArray = [];
-
-
-  Object.keys(messagesStore).forEach((chatId) => {
-    const access = getChatAccessInfo(chatId, req.user.id);
-    if (!access.ok) return;
-
-
-    const thread = messagesStore[chatId] || [];
-    if (thread.length === 0) return; // Skip empty chats
-
-
-    const last = thread[thread.length - 1];
-    const otherUser = users.find((u) => u.id === access.otherUserId);
-
-
-    chatsArray.push({
-      chatId, // UNIQUE per post
-      otherUserId: access.otherUserId,
-      otherUserName: otherUser?.name || "Unknown",
-      otherUserPhone: otherUser?.phone || "",
-      postId: access.postId, // Different post = different chat
-      lastMessage: last?.message || "Say hello! 👋",
-      lastMessageTime: last?.timestamp || thread[0]?.timestamp || "",
-      createdAt: thread[0]?.timestamp || "",
-      totalUnread: thread.filter((m) => !m.read && m.receiverId === req.user.id).length,
-    });
-  });
-
-
-  // Sort by latest message time (WhatsApp style)
-  chatsArray.sort((a, b) => {
-    const ta = new Date(a.lastMessageTime || a.createdAt || 0).getTime();
-    const tb = new Date(b.lastMessageTime || b.createdAt || 0).getTime();
-    return tb - ta;
-  });
-
-
-  res.json({
-    success: true,
-    chats: chatsArray,
-    totalChats: chatsArray.length,
-    totalUnread: chatsArray.reduce((sum, c) => sum + (c.totalUnread || 0), 0),
-  });
-});
-
-
-// ✅ 2. GET USER'S ALL PRIVATE CHATS (Shows in Profile)
-app.get("/my-messages", authenticateToken, (req, res) => {
-  const messages = loadPrivateMessages();
-  const allPosts = loadPosts();
-  const users = loadUsers();
-
-
-  const userChats = {};
-
-
-  // Find all chats where user is sender OR receiver
-  Object.keys(messages).forEach((chatId) => {
-    // OLD logic kept, but now safer parsing
-    const parsed = parseChatId(chatId);
-    if (!parsed) return;
-
-
-    const { user1, user2, postId } = parsed;
-
-
-    if (user1 === req.user.id || user2 === req.user.id) {
-      const otherUserId = user1 === req.user.id ? user2 : user1;
-      const otherUser = users.find((u) => u.id === otherUserId);
-
-
-      if (!userChats[otherUserId]) {
-        userChats[otherUserId] = {
-          user: otherUser || { id: otherUserId, name: "Unknown", phone: "" },
-          postId,
-          lastMessage: messages[chatId][messages[chatId].length - 1],
-          totalUnread: messages[chatId].filter((m) => !m.read && m.receiverId === req.user.id)
-            .length,
-          chatId,
-        };
-      }
-    }
-  });
-
-
-  const chatsArray = Object.values(userChats).sort(
-    (a, b) => new Date(b.lastMessage?.timestamp) - new Date(a.lastMessage?.timestamp)
-  );
-
-
-  res.json({
-    success: true,
-    chats: chatsArray,
-    totalChats: chatsArray.length,
-    totalUnread: chatsArray.reduce((sum, chat) => sum + chat.totalUnread, 0),
-  });
-});
-
-
-// ✅ 3. GET SPECIFIC CHAT MESSAGES
-// ✅ UPDATED: blocks other users from viewing someone else's chat
-// ✅ GET SPECIFIC CHAT MESSAGES (STABLE)
-app.get("/chat/:chatId", authenticateToken, (req, res) => {
-  const { chatId } = req.params;
-
-  const access = getChatAccessInfo(chatId, req.user.id);
-  if (!access.ok) {
-    return res.status(403).json({
-      success: false,
-      message: access.reason,
-      chatId,
-      messages: [],
-      isEmpty: true,
+// REGISTER
+app.post("/user-register", async (req, res) => {
+  try {
+    let { name, email, phone, password } = req.body;
+
+    name = String(name || "").trim();
+    email = normalizeEmail(email);
+    phone = normalizePhone(phone);
+    password = String(password || "");
+
+    if (!name || !email || !phone || !password) {
+      return res.status(400).json({ success: false, message: "All fields are required" });
+    }
+
+    const existing = await User.findOne({
+      $or: [{ email }, { phone }],
     });
+
+    if (existing) {
+      return res.status(409).json({
+        success: false,
+        message: "Email or phone already registered",
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const newUser = {
+      id: uuidv4(),
+      name,
+      email,
+      phone,
+      password: hashedPassword,
+      role: "user",
+      createdAt: new Date().toISOString(),
+    };
+
+    await User.create(newUser);
+
+    res.json({
+      success: true,
+      user: {
+        id: newUser.id,
+        name: newUser.name,
+        email: newUser.email,
+        phone: newUser.phone,
+      },
+    });
+  } catch (err) {
+    if (err?.code === 11000) {
+      return res.status(409).json({ success: false, message: "Email or phone already registered" });
+    }
+    res.status(500).json({ success: false, error: err.message });
   }
-
-  const messagesStore = loadPrivateMessages();
-
-  res.json({
-    success: true,
-    chatId,
-    messages: messagesStore[chatId] || [],
-    isEmpty: !(messagesStore[chatId] && messagesStore[chatId].length > 0),
-  });
 });
 
+// LOGIN
+app.post("/user-login", async (req, res) => {
+  try {
+    let { emailOrPhone, password } = req.body;
 
+    emailOrPhone = String(emailOrPhone || "").trim();
+    password = String(password || "");
 
+    if (!emailOrPhone || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "Email / phone and password required",
+      });
+    }
 
-// ✅ SIMPLE TEST ROUTES
-app.get('/api/test', (req, res) => {
-  res.json({ success: true, message: 'API Perfect ✅' });
+    const normalizedEmail = normalizeEmail(emailOrPhone);
+
+    const user = await User.findOne({
+      $or: [{ email: normalizedEmail }, { phone: emailOrPhone }],
+    }).select("+password");
+
+    if (!user) {
+      return res.status(401).json({ success: false, message: "Invalid credentials" });
+    }
+
+    const matched = await bcrypt.compare(password, user.password);
+    if (!matched) {
+      return res.status(401).json({ success: false, message: "Invalid credentials" });
+    }
+
+    const token = jwt.sign(
+      { id: user.id, role: user.role || "user" },
+      JWT_SECRET,
+      { expiresIn: "30d" }
+    );
+
+    res.json({
+      success: true,
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        role: user.role || "user",
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'healthy', uptime: process.uptime() });
+// CURRENT USER
+app.get("/me", authenticateToken, async (req, res) => {
+  res.json({ success: true, user: req.user });
 });
 
+// GET USER BY ID
+app.get("/users/:id", async (req, res) => {
+  try {
+    const user = await User.findOne({ id: req.params.id }).select("id name phone email createdAt role -_id");
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
 
-// ✅ 404 Handler - BEFORE error handler
+    res.json({
+      success: true,
+      user,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
+// WISHLIST ADD
+app.post("/wishlist/add", authenticateToken, async (req, res) => {
+  try {
+    const { postId } = req.body;
 
-// ✅ ERROR HANDLER - MUST BE LAST
+    if (!postId) {
+      return res.status(400).json({ success: false, message: "postId is required" });
+    }
+
+    const post = await Post.findOne({ id: postId, type: "room" });
+    if (!post) {
+      return res.status(404).json({ success: false, message: "Room not found" });
+    }
+
+    const exists = await Wishlist.findOne({ userId: req.user.id, postId });
+    if (exists) {
+      return res.status(409).json({ success: false, message: "Room already in wishlist" });
+    }
+
+    await Wishlist.create({
+      userId: req.user.id,
+      postId,
+      createdAt: new Date().toISOString(),
+    });
+
+    const total = await Wishlist.countDocuments({ userId: req.user.id });
+
+    res.json({
+      success: true,
+      message: "Added to wishlist",
+      postId,
+      total,
+    });
+  } catch (err) {
+    if (err?.code === 11000) {
+      return res.status(409).json({ success: false, message: "Room already in wishlist" });
+    }
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// WISHLIST REMOVE
+app.post("/wishlist/remove", authenticateToken, async (req, res) => {
+  try {
+    const { postId } = req.body;
+
+    if (!postId) {
+      return res.status(400).json({ success: false, message: "postId is required" });
+    }
+
+    await Wishlist.deleteOne({ userId: req.user.id, postId });
+    const total = await Wishlist.countDocuments({ userId: req.user.id });
+
+    res.json({
+      success: true,
+      message: "Removed from wishlist",
+      postId,
+      total,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET WISHLIST
+app.get("/wishlist", authenticateToken, async (req, res) => {
+  try {
+    const wishlistItems = await Wishlist.find({ userId: req.user.id }).sort({ createdAt: -1 });
+    const wishlistIds = wishlistItems.map((w) => w.postId);
+ 
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// CHECK WISHLIST ITEM
+app.get("/wishlist/:postId", authenticateToken, async (req, res) => {
+  try {
+    const { postId } = req.params;
+    const exists = await Wishlist.findOne({ userId: req.user.id, postId });
+
+    res.json({
+      success: true,
+      postId,
+      isInWishlist: !!exists,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST ROOM
+app.post("/post-room", authenticateToken, upload.array("photos", 12), async (req, res) => {
+  try {
+    const validationError = validateRoomPayload(req.body);
+    if (validationError) {
+      return res.status(400).json({ success: false, message: validationError });
+    }
+
+    let {
+      name,
+      phone,
+      email,
+      room_type,
+      gender,
+      facilities,
+      deposit,
+      available_from,
+      location,
+      map_link,
+      rent_by_person,
+    } = req.body;
+
+    name = String(name || "").trim();
+    phone = normalizePhone(phone);
+    email = normalizeEmail(email);
+    room_type = String(room_type || "").trim().toLowerCase();
+    gender = String(gender || "").trim().toLowerCase();
+    deposit = String(deposit || "").trim();
+    available_from = String(available_from || "").trim();
+    location = String(location || "").trim();
+    map_link = String(map_link || "").trim();
+
+    let imageLinks = [];
+    let parsedRentByPerson = rent_by_person || "";
+    let parsedFacilities = facilities || "";
+
+    try {
+      if (typeof rent_by_person === "string") parsedRentByPerson = JSON.parse(rent_by_person);
+    } catch {}
+
+    try {
+      if (typeof facilities === "string" && (facilities.startsWith("[") || facilities.startsWith("{"))) {
+        parsedFacilities = JSON.parse(facilities);
+      }
+    } catch {}
+
+    if (req.files?.length) {
+      const uploadResults = await Promise.all(
+        req.files.map(async (file) => {
+          try {
+            return await uploadFileToImgBB(file.path);
+          } catch (e) {
+            console.error("❌ Image upload failed:", e.message);
+            return null;
+          }
+        })
+      );
+      imageLinks = uploadResults.filter(Boolean);
+    }
+
+    const newRoom = {
+      id: uuidv4(),
+      name,
+      phone,
+      email,
+      gender,
+      location,
+      rent_by_person: parsedRentByPerson,
+      deposit,
+      room_type,
+      available_from,
+      facilities: parsedFacilities,
+      map_link,
+      imageLinks,
+      type: "room",
+      poster_user_id: req.user.id,
+      hidden: false,
+      timestamp: new Date().toISOString(),
+    };
+
+    await Post.create(newRoom);
+
+    res.json({
+      success: true,
+      message: "Room posted successfully",
+      links: imageLinks,
+      id: newRoom.id,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// MY ROOMS
+app.get("/my-rooms", authenticateToken, async (req, res) => {
+  try {
+    const posts = await Post.find({
+      type: "room",
+      $or: [{ poster_user_id: req.user.id }, { posteruserid: req.user.id }],
+    }).sort({ timestamp: -1 });
+
+    res.json({ success: true, rooms: posts });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// DELETE MY ROOM
+app.delete("/my-room/:postId", authenticateToken, async (req, res) => {
+  try {
+    const { postId } = req.params;
+
+    const post = await Post.findOne({
+      id: postId,
+      type: "room",
+      $or: [{ poster_user_id: req.user.id }, { posteruserid: req.user.id }],
+    });
+
+    if (!post) {
+      return res.status(404).json({
+        success: false,
+        message: "Room post not found or you don't have permission to delete it",
+      });
+    }
+
+    await Post.deleteOne({ id: postId, type: "room" });
+    await Wishlist.deleteMany({ postId });
+
+    res.json({
+      success: true,
+      message: "Room post deleted successfully",
+      postId,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// EDIT ROOM
+app.patch("/edit-room/:id", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const allowedRoomFields = [
+      "name",
+      "phone",
+      "email",
+      "gender",
+      "location",
+      "rent_by_person",
+      "deposit",
+      "room_type",
+      "available_from",
+      "facilities",
+      "map_link",
+      "imageLinks",
+    ];
+
+    const safeUpdates = pickAllowedFields(req.body, allowedRoomFields);
+
+    if (safeUpdates.email) safeUpdates.email = normalizeEmail(safeUpdates.email);
+    if (safeUpdates.phone) safeUpdates.phone = normalizePhone(safeUpdates.phone);
+    if (safeUpdates.gender) safeUpdates.gender = String(safeUpdates.gender).trim().toLowerCase();
+    if (safeUpdates.room_type) safeUpdates.room_type = String(safeUpdates.room_type).trim().toLowerCase();
+
+    const updatedPost = await Post.findOneAndUpdate(
+      {
+        id,
+        type: "room",
+        $or: [{ poster_user_id: req.user.id }, { posteruserid: req.user.id }],
+      },
+      {
+        $set: {
+          ...safeUpdates,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+      { new: true }
+    );
+
+    if (!updatedPost) {
+      return res.status(404).json({
+        success: false,
+        message: "Room not found or not yours",
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Room updated successfully",
+      room: updatedPost,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// TOGGLE ROOM
+app.patch("/toggle-room/:id", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const post = await Post.findOne({
+      id,
+      type: "room",
+      $or: [{ poster_user_id: req.user.id }, { posteruserid: req.user.id }],
+    });
+
+    if (!post) {
+      return res.status(404).json({ success: false, message: "Room not found or not yours" });
+    }
+
+    post.hidden = !post.hidden;
+    post.updatedAt = new Date().toISOString();
+    await post.save();
+
+    res.json({
+      success: true,
+      hidden: post.hidden,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ROOMMATE POST
+app.post("/roommate-post", authenticateToken, async (req, res) => {
+  try {
+    const validationError = validateRoommatePayload(req.body);
+    if (validationError) {
+      return res.status(400).json({ success: false, message: validationError });
+    }
+
+    let { name, message, gender, phone, email } = req.body;
+
+    name = String(name || "").trim();
+    message = String(message || "").trim();
+    gender = String(gender || "").trim().toLowerCase();
+    phone = normalizePhone(phone);
+    email = normalizeEmail(email);
+
+    const newPost = {
+      id: uuidv4(),
+      name,
+      email,
+      message,
+      gender,
+      phone,
+      poster_user_id: req.user.id,
+      type: "roommate",
+      hidden: false,
+      timestamp: new Date().toISOString(),
+    };
+
+    await Post.create(newPost);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// MY ROOMMATE POSTS
+app.get("/my-roommate-posts", authenticateToken, async (req, res) => {
+  try {
+    const posts = await Post.find({
+      type: "roommate",
+      $or: [{ poster_user_id: req.user.id }, { posteruserid: req.user.id }],
+    }).sort({ timestamp: -1 });
+
+    res.json({ success: true, posts });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// DELETE MY ROOMMATE POST
+app.delete("/my-roommate-post/:postId", authenticateToken, async (req, res) => {
+  try {
+    const { postId } = req.params;
+
+    const post = await Post.findOne({
+      id: postId,
+      type: "roommate",
+      $or: [{ poster_user_id: req.user.id }, { posteruserid: req.user.id }],
+    });
+
+    if (!post) {
+      return res.status(404).json({
+        success: false,
+        message: "Roommate post not found or you don't have permission to delete it",
+      });
+    }
+
+    await Post.deleteOne({ id: postId, type: "roommate" });
+
+    res.json({
+      success: true,
+      message: "Roommate post deleted successfully",
+      postId,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// EDIT MY ROOMMATE POST
+app.patch("/my-roommate-post/:postId", authenticateToken, async (req, res) => {
+  try {
+    const { postId } = req.params;
+
+    const allowedRoommateFields = ["name", "message", "gender", "phone", "email"];
+    const safeUpdates = pickAllowedFields(req.body, allowedRoommateFields);
+
+    if (safeUpdates.email) safeUpdates.email = normalizeEmail(safeUpdates.email);
+    if (safeUpdates.phone) safeUpdates.phone = normalizePhone(safeUpdates.phone);
+    if (safeUpdates.gender) safeUpdates.gender = String(safeUpdates.gender).trim().toLowerCase();
+
+    const result = await Post.findOneAndUpdate(
+      {
+        id: postId,
+        type: "roommate",
+        $or: [{ poster_user_id: req.user.id }, { posteruserid: req.user.id }],
+      },
+      {
+        $set: {
+          ...safeUpdates,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+      { new: true }
+    );
+
+    if (!result) {
+      return res.status(404).json({
+        success: false,
+        message: "Roommate post not found or you don't have permission to edit it",
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Roommate post updated successfully",
+      post: result,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ROOMMATE HIDE
+app.patch("/roommate-hide/:id", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const post = await Post.findOne({
+      id,
+      type: "roommate",
+      $or: [{ poster_user_id: req.user.id }, { posteruserid: req.user.id }],
+    });
+
+    if (!post) {
+      return res.status(404).json({ success: false, message: "Roommate post not found or not yours" });
+    }
+
+    post.hidden = !post.hidden;
+    post.updatedAt = new Date().toISOString();
+    await post.save();
+
+    res.json({ success: true, hidden: post.hidden });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ROOMMATE EDIT
+app.patch("/roommate-edit/:id", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const allowedRoommateFields = ["name", "message", "gender", "phone", "email"];
+    const safeUpdates = pickAllowedFields(req.body, allowedRoommateFields);
+
+    if (safeUpdates.email) safeUpdates.email = normalizeEmail(safeUpdates.email);
+    if (safeUpdates.phone) safeUpdates.phone = normalizePhone(safeUpdates.phone);
+    if (safeUpdates.gender) safeUpdates.gender = String(safeUpdates.gender).trim().toLowerCase();
+
+    const post = await Post.findOneAndUpdate(
+      {
+        id,
+        type: "roommate",
+        $or: [{ poster_user_id: req.user.id }, { posteruserid: req.user.id }],
+      },
+      {
+        $set: {
+          ...safeUpdates,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+      { new: true }
+    );
+
+    if (!post) {
+      return res.status(404).json({ success: false, message: "Roommate post not found or not yours" });
+    }
+
+    res.json({ success: true, post });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ROOMMATE REPLY
+app.post("/roommate-reply", authenticateToken, async (req, res) => {
+  try {
+    const { postId } = req.body;
+    const post = await Post.findOne({ id: postId, type: "roommate" });
+
+    if (!post) {
+      return res.status(404).json({ success: false, error: "Invalid roommate post." });
+    }
+
+    if (getPosterUserId(post) === req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: "You cannot reply to your own roommate post",
+      });
+    }
+
+    const chatId = buildNormalizedChatId(req.user.id, getPosterUserId(post), postId);
+
+    res.json({
+      success: true,
+      chatLink: `${BASE_URL}/roommate-reply.html?chatId=${chatId}`,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// PRIVATE MESSAGE
+app.post("/private-message", authenticateToken, async (req, res) => {
+  try {
+    const { targetUserId, postId, message, chatId: incomingChatId } = req.body;
+
+    if (!message || !String(message).trim()) {
+      return res.status(400).json({ success: false, message: "message is required" });
+    }
+
+    if (incomingChatId) {
+      const access = getChatAccessInfo(incomingChatId, req.user.id);
+      if (!access.ok) {
+        return res.status(403).json({ success: false, message: access.reason });
+      }
+
+      const normalizedIncomingChatId = buildNormalizedChatId(access.user1, access.user2, access.postId);
+
+      await PrivateMessage.create({
+        chatId: normalizedIncomingChatId,
+        senderId: req.user.id,
+        senderName: req.user.name || req.user.phone,
+        senderPhone: req.user.phone || "",
+        receiverId: access.otherUserId,
+        postId: access.postId,
+        message: String(message).trim(),
+        timestamp: new Date().toISOString(),
+        read: false,
+      });
+
+      return res.json({
+        success: true,
+        message: "Message sent successfully",
+        chatId: normalizedIncomingChatId,
+      });
+    }
+
+    if (!targetUserId || !postId) {
+      return res.status(400).json({
+        success: false,
+        message: "targetUserId, postId, and message required",
+      });
+    }
+
+    if (String(targetUserId) === String(req.user.id)) {
+      return res.status(400).json({ success: false, message: "You cannot message yourself" });
+    }
+
+    const builtChatId = buildNormalizedChatId(req.user.id, targetUserId, postId);
+
+    await PrivateMessage.create({
+      chatId: builtChatId,
+      senderId: req.user.id,
+      senderName: req.user.name,
+      senderPhone: req.user.phone,
+      receiverId: targetUserId,
+      postId,
+      message: String(message).trim(),
+      timestamp: new Date().toISOString(),
+      read: false,
+    });
+
+    res.json({
+      success: true,
+      message: "Message sent successfully",
+      chatId: builtChatId,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// MY CHATS
+app.get("/my-chats", authenticateToken, async (req, res) => {
+  try {
+    const grouped = await PrivateMessage.aggregate([
+      {
+        $match: {
+          $or: [{ senderId: req.user.id }, { receiverId: req.user.id }],
+        },
+      },
+      { $sort: { timestamp: 1 } },
+      {
+        $group: {
+          _id: "$chatId",
+          lastMessage: { $last: "$message" },
+          lastMessageTime: { $last: "$timestamp" },
+          postId: { $last: "$postId" },
+          createdAt: { $first: "$timestamp" },
+          totalUnread: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ["$receiverId", req.user.id] },
+                    { $eq: ["$read", false] },
+                  ],
+                },
+                1,
+                0,
+              ],
+            },
+          },
+        },
+      },
+      { $sort: { lastMessageTime: -1 } },
+    ]);
+
+    const users = await User.find().select("id name phone -_id");
+    const userMap = {};
+    users.forEach((u) => {
+      userMap[u.id] = u;
+    });
+
+    const chatsArray = grouped
+      .map((item) => {
+        const access = getChatAccessInfo(item._id, req.user.id);
+        if (!access.ok) return null;
+
+        const otherUser = userMap[access.otherUserId];
+
+        return {
+          chatId: item._id,
+          otherUserId: access.otherUserId,
+          otherUserName: otherUser?.name || "Unknown",
+          otherUserPhone: otherUser?.phone || "",
+          postId: item.postId,
+          lastMessage: item.lastMessage || "Say hello! 👋",
+          lastMessageTime: item.lastMessageTime || item.createdAt || "",
+          createdAt: item.createdAt || "",
+          totalUnread: item.totalUnread || 0,
+        };
+      })
+      .filter(Boolean);
+
+    res.json({
+      success: true,
+      chats: chatsArray,
+      totalChats: chatsArray.length,
+      totalUnread: chatsArray.reduce((sum, c) => sum + (c.totalUnread || 0), 0),
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// MY MESSAGES
+app.get("/my-messages", authenticateToken, async (req, res) => {
+  try {
+    const grouped = await PrivateMessage.aggregate([
+      {
+        $match: {
+          $or: [{ senderId: req.user.id }, { receiverId: req.user.id }],
+        },
+      },
+      { $sort: { timestamp: 1 } },
+      {
+        $group: {
+          _id: "$chatId",
+          lastMessageObj: {
+            $last: {
+              message: "$message",
+              timestamp: "$timestamp",
+              senderId: "$senderId",
+              receiverId: "$receiverId",
+              postId: "$postId",
+              read: "$read",
+            },
+          },
+          postId: { $last: "$postId" },
+          totalUnread: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ["$receiverId", req.user.id] },
+                    { $eq: ["$read", false] },
+                  ],
+                },
+                1,
+                0,
+              ],
+            },
+          },
+        },
+      },
+      { $sort: { "lastMessageObj.timestamp": -1 } },
+    ]);
+
+    const users = await User.find().select("id name phone -_id");
+    const userMap = {};
+    users.forEach((u) => {
+      userMap[u.id] = u;
+    });
+
+    const chatsArray = grouped
+      .map((item) => {
+        const access = getChatAccessInfo(item._id, req.user.id);
+        if (!access.ok) return null;
+
+        const otherUser = userMap[access.otherUserId];
+
+        return {
+          user: otherUser || { id: access.otherUserId, name: "Unknown", phone: "" },
+          postId: item.postId,
+          lastMessage: item.lastMessageObj,
+          totalUnread: item.totalUnread || 0,
+          chatId: item._id,
+        };
+      })
+      .filter(Boolean);
+
+    res.json({
+      success: true,
+      chats: chatsArray,
+      totalChats: chatsArray.length,
+      totalUnread: chatsArray.reduce((sum, chat) => sum + chat.totalUnread, 0),
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET CHAT
+app.get("/chat/:chatId", authenticateToken, async (req, res) => {
+  try {
+    const normalizedChatId = (() => {
+      const parsed = parseChatId(req.params.chatId);
+      if (!parsed) return req.params.chatId;
+      return buildNormalizedChatId(parsed.user1, parsed.user2, parsed.postId);
+    })();
+
+    const access = getChatAccessInfo(normalizedChatId, req.user.id);
+    if (!access.ok) {
+      return res.status(403).json({
+        success: false,
+        message: access.reason,
+        chatId: normalizedChatId,
+        messages: [],
+        isEmpty: true,
+      });
+    }
+
+    const messages = await PrivateMessage.find({ chatId: normalizedChatId }).sort({ timestamp: 1 });
+
+    res.json({
+      success: true,
+      chatId: normalizedChatId,
+      messages,
+      isEmpty: messages.length === 0,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// MARK READ
+app.patch("/chat/:chatId/read", authenticateToken, async (req, res) => {
+  try {
+    const normalizedChatId = (() => {
+      const parsed = parseChatId(req.params.chatId);
+      if (!parsed) return req.params.chatId;
+      return buildNormalizedChatId(parsed.user1, parsed.user2, parsed.postId);
+    })();
+
+    const access = getChatAccessInfo(normalizedChatId, req.user.id);
+    if (!access.ok) {
+      return res.status(403).json({ success: false, message: access.reason });
+    }
+
+    await PrivateMessage.updateMany(
+      { chatId: normalizedChatId, receiverId: req.user.id, read: false },
+      { $set: { read: true } }
+    );
+
+    res.json({ success: true, message: "Messages marked as read" });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET SINGLE POST - PUBLIC
+app.get("/posts/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const post = await Post.findOne({
+      id,
+      hidden: { $ne: true },
+    });
+
+    if (!post) {
+      return res.status(404).json({ success: false, message: "Post not found" });
+    }
+
+    const owner = getPosterUserId(post)
+      ? await User.findOne({ id: getPosterUserId(post) }).select("id name phone email -_id")
+      : null;
+
+    res.json({
+      success: true,
+      post: {
+        ...post.toObject(),
+        poster_user_id: getPosterUserId(post),
+        owner: owner || null,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// PUBLIC ROOMS
+app.get("/api/rooms", async (req, res) => {
+  try {
+    const { budget } = req.query;
+    const mongoQuery = buildRoomQuery(req.query);
+
+    let posts = await Post.find(mongoQuery).sort({ timestamp: -1 });
+
+    if (budget) {
+      const b = parseInt(budget);
+      posts = posts.filter((p) => {
+        const rentNum = getMinimumRentValue(p.rent_by_person || p.deposit);
+        return isNaN(b) || (isNaN(rentNum) ? true : rentNum <= b);
+      });
+    }
+
+    res.json(posts);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ROOM POSTS
+app.get("/room-posts", async (req, res) => {
+  try {
+    const { budget } = req.query;
+    const mongoQuery = buildRoomQuery(req.query);
+
+    let posts = await Post.find(mongoQuery).sort({ timestamp: -1 });
+
+    if (budget) {
+      const b = parseInt(budget);
+      posts = posts.filter((p) => {
+        const rentNum = getMinimumRentValue(p.rent_by_person);
+        return isNaN(b) || (isNaN(rentNum) ? true : rentNum <= b);
+      });
+    }
+
+    res.json(posts);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// PUBLIC ROOMMATE POSTS
+app.get("/roommate-posts", async (req, res) => {
+  try {
+    const posts = await Post.find({
+      type: "roommate",
+      hidden: { $ne: true },
+    }).sort({ timestamp: -1 });
+
+    res.json(posts);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// LEGACY PRIVATE REPLY
+app.post("/private-reply", async (req, res) => {
+  try {
+    const { postId, senderName, senderEmail, message } = req.body;
+
+    if (!postId || !senderName || !senderEmail || !message) {
+      return res.status(400).json({ success: false, message: "All fields are required" });
+    }
+
+    await LegacyChat.create({
+      postId,
+      senderName: String(senderName).trim(),
+      senderEmail: normalizeEmail(senderEmail),
+      message: String(message).trim(),
+      timestamp: new Date().toISOString(),
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/private-reply/:postId", async (req, res) => {
+  try {
+    const chats = await LegacyChat.find({ postId: req.params.postId }).sort({ timestamp: 1 });
+    res.json(chats);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ADMIN LOGIN
+app.post("/admin-login", async (req, res) => {
+  try {
+    const { username, password } = req.body;
+
+    if (username !== ADMIN_USERNAME || password !== ADMIN_PASSWORD) {
+      return res.status(401).json({ success: false, message: "Invalid credentials" });
+    }
+
+    const token = jwt.sign(
+      { role: "admin", username: ADMIN_USERNAME },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    res.status(200).json({ success: true, token, role: "admin" });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ADMIN DATA
+app.get("/admin-data", authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const rooms = await Post.find({ type: "room" }).sort({ timestamp: -1 });
+    res.json(rooms);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ADMIN TOGGLE ROOM
+app.patch("/admin/toggle-room/:id", authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const post = await Post.findOne({ id: req.params.id, type: "room" });
+    if (!post) {
+      return res.status(404).json({ success: false, message: "Room not found" });
+    }
+
+    post.hidden = !post.hidden;
+    post.updatedAt = new Date().toISOString();
+    await post.save();
+
+    res.json({ success: true, hidden: post.hidden });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ADMIN EDIT ROOM
+app.patch("/admin/edit-room/:id", authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const allowedRoomFields = [
+      "name",
+      "phone",
+      "email",
+      "gender",
+      "location",
+      "rent_by_person",
+      "deposit",
+      "room_type",
+      "available_from",
+      "facilities",
+      "map_link",
+      "imageLinks",
+      "hidden",
+    ];
+
+    const safeUpdates = pickAllowedFields(req.body, allowedRoomFields);
+
+    if (safeUpdates.email) safeUpdates.email = normalizeEmail(safeUpdates.email);
+    if (safeUpdates.phone) safeUpdates.phone = normalizePhone(safeUpdates.phone);
+    if (safeUpdates.gender) safeUpdates.gender = String(safeUpdates.gender).trim().toLowerCase();
+    if (safeUpdates.room_type) safeUpdates.room_type = String(safeUpdates.room_type).trim().toLowerCase();
+
+    const post = await Post.findOneAndUpdate(
+      { id: req.params.id, type: "room" },
+      { $set: { ...safeUpdates, updatedAt: new Date().toISOString() } },
+      { new: true }
+    );
+
+    if (!post) {
+      return res.status(404).json({ success: false, message: "Room not found" });
+    }
+
+    res.json({ success: true, post });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// TEST ROUTES
+app.get("/api/test", async(req, res) => {
+  res.json({ success: true, message: "API Perfect ✅" });
+});
+
+app.get("/api/health",async (req, res) => {
+  res.json({ status: "healthy", uptime: process.uptime() });
+});
+
+// ERROR HANDLER
 app.use((err, req, res, next) => {
-  console.error('❌ ERROR:', err.message);
-  res.status(500).json({ error: 'Server error' });
+  console.error("❌ ERROR:", err.message);
+  res.status(500).json({ error: "Server error" });
 });
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`✅ Backend running at ${BASE_URL}`);
 });
-
-
-// ✅======================= END PRIVATE MESSAGING =======================✅
-
-
-// ✅======================= AUTHENTICATED ROOMMATE ROUTES =======================✅
-
-
-// ✅ FIXED: ROOMMATE POST - Now stores poster_user_id
-app.post("/roommate-post", authenticateToken, (req, res) => {
-  const { name, message, gender, phone, email } = req.body;
-
-  const posts = loadPosts();
-
-  const newPost = {
-    id: uuidv4(),
-    name,
-    email,
-    message,
-    gender,
-    phone,
-    poster_user_id: req.user.id,
-    type: "roommate",
-    hidden: false,
-    timestamp: new Date().toISOString()
-  };
-
-  posts.push(newPost);
-  savePosts(posts);
-
-  res.json({ success: true });
-});
-
-// ✅ FIXED: DELETE MY ROOMMATE POST - Backward compatible
-app.delete("/my-roommate-post/:postId", authenticateToken, (req, res) => {
-  const { postId } = req.params;
-
-
-  if (!postId) {
-    return res.status(400).json({ success: false, message: "postId is required" });
-  }
-
-
-  const posts = loadPosts();
-  const postIndex = posts.findIndex(
-    (p) => p.id === postId && p.type === "roommate" && getPosterUserId(p) === req.user.id // ✅ Backward compatible
-  );
-
-
-  if (postIndex === -1) {
-    return res.status(404).json({
-      success: false,
-      message: "Roommate post not found or you don't have permission to delete it",
-    });
-  }
-
-
-  posts.splice(postIndex, 1);
-  savePosts(posts);
-
-
-  console.log(`✅ DELETED ROOMMATE POST: ${postId} by user ${req.user.id}`);
-
-
-  res.json({
-    success: true,
-    message: "Roommate post deleted successfully",
-    postId,
-  });
-});
-
-
-// ✅ FIXED: EDIT MY ROOMMATE POST - Backward compatible
-app.patch("/my-roommate-post/:postId", authenticateToken, (req, res) => {
-  const { postId } = req.params;
-  const updated = req.body;
-
-
-  const posts = loadPosts();
-  const postIndex = posts.findIndex(
-    (p) => p.id === postId && p.type === "roommate" && getPosterUserId(p) === req.user.id // ✅ Backward compatible
-  );
-
-
-  if (postIndex === -1) {
-    return res.status(404).json({
-      success: false,
-      message: "Roommate post not found or you don't have permission to edit it",
-    });
-  }
-
-
-  posts[postIndex] = {
-    ...posts[postIndex],
-    ...updated,
-    updatedAt: new Date().toISOString(),
-  };
-
-
-  savePosts(posts);
-
-
-  res.json({
-    success: true,
-    message: "Roommate post updated successfully",
-  });
-});
-
-
-// ✅ FIXED: REPLY TO ROOMMATE POST - Backward compatible + Chat link
-app.post("/roommate-reply", authenticateToken, (req, res) => {
-  const { postId, replyMessage } = req.body;
-
-
-  console.log("🔍 DEBUG - postId:", postId);
-  
-  const posts = loadPosts();
-  const post = posts.find((p) => p.id === postId);
-  
-  console.log("🔍 DEBUG - found post:", post);
-  
-  if (!post || post.type !== "roommate") {
-    return res.status(404).json({ success: false, error: "Invalid roommate post." });
-  }
-
-
-  // ✅ NEW: Prevent poster from replying to own post (backward compatible)
-  if (getPosterUserId(post) === req.user.id) {
-    return res.status(403).json({
-      success: false,
-      message: "You cannot reply to your own roommate post",
-    });
-  }
-
-
-
-  savePosts(posts);
-  res.json({
-    success: true,
-    chatLink: `${BASE_URL}/ROOMMATE-REPLY.HTML.html?chatId=${req.user.id}_${getPosterUserId(post)}_${postId}`,
-  });
-});
-
-
-// ✅ GET SINGLE POST BY ID (Room / Roommate) - Frontend needs this
-app.get("/posts/:id", authenticateToken, (req, res) => {
-  try {
-    const { id } = req.params;
-
-
-    const posts = loadPosts();
-    const post = posts.find((p) => p.id === id);
-
-
-
-    // Ensure poster_user_id is always present (backward compatible)
-    const postWithOwner = {
-      ...post,
-      poster_user_id: getPosterUserId(post),
-    };
-
-
-    return res.json({
-      success: true,
-      post: postWithOwner,
-    });
-  } catch (err) {
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: err.message,
-    });
-  }
-});
-
-// ✅ PUBLIC ROOMS
-app.get("/api/rooms", (req, res) => {
-
-  const { city, type, gender, budget } = req.query;
-
-  let posts = loadPosts().filter(p => p.type === "room" && !p.hidden);
-
-  const filtered = posts.filter((p) => {
-    let ok = true;
-
-    if (city) {
-      const c = city.toLowerCase();
-      const loc = (p.location || "").toLowerCase();
-      ok = ok && loc.includes(c);
-    }
-
-    if (type) {
-      ok = ok && (p.room_type || "").toLowerCase().includes(type.toLowerCase());
-    }
-
-    if (gender) {
-      ok = ok && (p.gender || "").toLowerCase() === gender.toLowerCase();
-    }
-
-    if (budget) {
-      const b = parseInt(budget);
-      const rentNum = parseInt((p.deposit || "").toString().replace(/\D/g, ""));
-      if (!isNaN(b) && !isNaN(rentNum)) {
-        ok = ok && rentNum <= b;
-      }
-    }
-
-    return ok;
-  });
-
-  res.json(filtered);
-});
-
-
-// ✅ PUBLIC ROOMMATE POSTS
-app.get("/roommate-posts", (req, res) => {
-  let posts = loadPosts().filter(p => p.type === "roommate" && !p.hidden);
-
-  posts = posts.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-
-  const postsWithOwner = posts.map(post => ({
-    ...post,
-    poster_user_id: getPosterUserId(post),
-  }));
-
-  res.json(postsWithOwner);
-});
-
-
-
-// ✅ Rest of admin routes (unchanged)...
-app.post("/private-reply", (req, res) => {
-  const { postId, senderName, senderEmail, message } = req.body;
-  const chats = loadChats();
-  if (!chats[postId]) chats[postId] = [];
-  chats[postId].push({
-    senderName,
-    senderEmail,
-    message,
-    timestamp: new Date().toISOString(),
-  });
-  saveChats(chats);
-  res.json({ success: true });
-});
-
-
-app.get("/private-reply/:postId", (req, res) => {
-  res.json(loadChats()[req.params.postId] || []);
-});
-
-
-app.post("/admin-login", (req, res) => {
-  const { username, password } = req.body;
-  if (username === "findnearroom" && password === "radheradhe@207") {
-    res.status(200).send("Login successful");
-  } else {
-    res.status(401).send("Invalid credentials");
-  }
-});
-
-
-app.get("/admin-data", (req, res) => {
-  const rooms = loadPosts().filter((p) => p.type === "room");
-  const sortedRooms = rooms.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-  res.json(sortedRooms);
-});
-
-app.delete("/delete-room/:id", authenticateToken, (req, res) => {
-
-  const { id } = req.params;
-
-  let posts = loadPosts();
-
-  const index = posts.findIndex(
-    p =>
-      p.id === id &&
-      p.type === "room" &&
-      getPosterUserId(p) === req.user.id
-  );
-
-  if (index === -1) {
-    return res.status(404).json({
-      success: false,
-      message: "Room not found or not yours"
-    });
-  }
-
-  posts.splice(index, 1);
-
-  savePosts(posts);
-
-  res.json({
-    success: true,
-    message: "Room deleted successfully"
-  });
-
-});
-
-// ✅ TOGGLE HIDE ROOM BY ID (ADMIN)
-app.patch("/toggle-room/:id", (req, res) => {
-  const { id } = req.params;
-
-  let posts = loadPosts();
-  const index = posts.findIndex(p => p.id === id && p.type === "room");
-
-  if (index === -1) {
-    return res.status(404).json({ success: false, message: "Room not found" });
-  }
-
-  posts[index].hidden = !posts[index].hidden;
-
-  savePosts(posts);
-
-  res.json({
-    success: true,
-    hidden: posts[index].hidden
-  });
-});
-
-
-// ✅ EDIT ROOM BY ID
-app.patch("/edit-room/:id", (req, res) => {
-  const { id } = req.params;
-  const updatedData = req.body;
-
-  let posts = loadPosts();
-
-  const postIndex = posts.findIndex(
-    (p) => p.id === id && p.type === "room"
-  );
-
-  if (postIndex === -1) {
-    return res.status(404).json({
-      success: false,
-      message: "Room not found"
-    });
-  }
-
-  posts[postIndex] = {
-    ...posts[postIndex],
-    ...updatedData,
-    updatedAt: new Date().toISOString()
-  };
-
-  savePosts(posts);
-
-  res.json({
-    success: true,
-    message: "Room updated successfully"
-  });
-});
-
-
-
-
-app.patch("/roommate-hide/:id", (req, res) => {
-  const { id } = req.params;
-  const { hidden } = req.body;
-  let posts = loadPosts();
-  const idx = posts.findIndex((p) => p.id === id && p.type === "roommate");
-  if (idx === -1) {
-    return res.status(404).json({ success: false, message: "Roommate post not found" });
-  }
-  posts[idx].hidden = !!hidden;
-  savePosts(posts);
-  res.json({ success: true, hidden: posts[idx].hidden });
-});
-
-
-app.patch("/roommate-edit/:id", (req, res) => {
-  const { id } = req.params;
-  const updated = req.body;
-  let posts = loadPosts();
-  const idx = posts.findIndex((p) => p.id === id && p.type === "roommate");
-  if (idx === -1) {
-    return res.status(404).json({ success: false, message: "Roommate post not found" });
-  }
-  posts[idx] = {
-    ...posts[idx],
-    ...updated,
-    updatedAt: new Date().toISOString(),
-  };
-  savePosts(posts);
-  res.json({ success: true });
-});
-// GET ALL ROOM POSTS (PUBLIC LISTING)
-app.get("/room-posts", (req, res) => {
-
-  const { city, type, gender, budget } = req.query;
-
-  let posts = loadPosts()
-    .filter(p => p.type === "room" && !p.hidden);
-
-  const filtered = posts.filter((p) => {
-    let ok = true;
-
-    if (city) {
-      const c = city.toLowerCase();
-      const loc = (p.location || "").toLowerCase();
-      ok = ok && loc.includes(c);
-    }
-
-    if (type) {
-      ok = ok && (p.room_type || "").toLowerCase().includes(type.toLowerCase());
-    }
-
-    if (gender) {
-      const g = (p.gender || "").toLowerCase();
-
-      if (gender.toLowerCase() === "boys" || gender.toLowerCase() === "girls") {
-        ok = ok && (g === gender.toLowerCase() || g === "both");
-      } else {
-        ok = ok && g === gender.toLowerCase();
-      }
-    }
-
-    if (budget) {
-      const b = parseInt(budget);
-
-      let rentNum = 0;
-
-      try {
-        if (typeof p.rent_by_person === "object") {
-          const values = Object.values(p.rent_by_person).map(v =>
-            parseInt(String(v).replace(/\D/g, ""))
-          );
-
-          rentNum = Math.min(...values.filter(v => !isNaN(v)));
-        } else {
-          rentNum = parseInt(
-            String(p.rent_by_person || "").replace(/\D/g, "")
-          );
-        }
-      } catch {}
-
-      if (!isNaN(b) && !isNaN(rentNum)) {
-        ok = ok && rentNum <= b;
-      }
-    }
-
-    return ok;
-  });
-
-  filtered.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-
-  res.json(filtered);
-});
-
-
-// Start Server
-  console.log(`✅ Backend running at ${BASE_URL}`);
-  console.log("✅ PROTECTED ROUTES:");
-  console.log("   POST /post-room (LOGIN REQUIRED)");
-  console.log("   POST /roommate-post (LOGIN REQUIRED)");
-  console.log("   GET /me");
-  console.log("   GET /my-rooms");
-  console.log("   DELETE /my-room/:postId");
-  console.log("   GET /my-roommate-posts");
-  console.log("   DELETE /my-roommate-post/:postId");
-  console.log("   PATCH /my-roommate-post/:postId");
-  console.log("   POST /roommate-reply");
-  console.log("   /wishlist/*");
-  console.log("💬 NEW MESSAGING:");
-  console.log("   POST /private-message");
-  console.log("   GET /my-messages (Profile chats)");
-  console.log("   GET /my-chats (roommate-reply.html chats list)");
-  console.log("   GET /chat/:chatId");
-;
