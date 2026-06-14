@@ -5,22 +5,12 @@ const cors = require("cors");
 const { v4: uuidv4 } = require("uuid");
 const multer = require("multer");
 const axios = require("axios");
-const mongoose = require("mongoose");
-const dns = require("dns");
-dns.setServers(["8.8.8.8", "8.8.4.4"]);
+
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
-mongoose.connect(
-  "mongodb+srv://sonusonua22409_db_user:radheradhe207@cluster0.jg4xelo.mongodb.net/findnearroom?retryWrites=true&w=majority&appName=Cluster0",
-  {
-    dbName: "findnearroom"
-  }
-)
-.then(() => console.log("✅ MongoDB Connected"))
-.catch(err => console.error("❌ MongoDB Error:", err))
-;
+
 
 // ================== ERROR HANDLING ==================
 process.on("uncaughtException", (err) => logDetailedError("Uncaught Exception", err));
@@ -88,8 +78,11 @@ function authenticateToken(req, res, next) {
   const token = parts[1];
   const userId = token.split(":")[0];
 
-const users = loadUsers();
-const user = users.find((u) => u.id === userId);
+
+  const users = loadUsers();
+  const user = users.find((u) => u.id === userId);
+
+
   if (!user) {
     return res.status(401).json({ success: false, message: "Invalid token" });
   }
@@ -154,21 +147,7 @@ const CHAT_FILE = path.join(__dirname, "roommate-reply.json");
 const USERS_FILE = path.join(__dirname, "users.json");
 const WISHLIST_FILE = path.join(__dirname, "wishlist.json");
 const PRIVATE_MESSAGES_FILE = path.join(__dirname, "private-messages.json"); // ✅ NEW: Private messages
-const UserSchema = new mongoose.Schema({
-  id: String,
-  name: String,
-  email: String,
-  phone: String,
-  password: String,
-  createdAt: String
-});
 
-const PostSchema = new mongoose.Schema({}, {
-  strict: false
-});
-
-const User = mongoose.model("User", UserSchema);
-const Post = mongoose.model("Post", PostSchema);
 
 function loadPosts() {
   if (!fs.existsSync(POSTS_FILE)) return [];
@@ -289,51 +268,52 @@ async function uploadFileToImgBB(localPath) {
 
 
 // ✅ USER REGISTER - CORRECT ENDPOINT
-app.post("/user-register", async (req, res) => {
-  try {
+app.post("/user-register", (req, res) => {
+  const { name, email, phone, password } = req.body;
 
-    const { name, email, phone, password } = req.body;
 
-    const existing = await User.findOne({
-      $or: [
-        { email },
-        { phone }
-      ]
-    });
+  if (!name || !email || !phone || !password) {
+    return res.status(400).json({ success: false, message: "All fields are required" });
+  }
 
-    if (existing) {
-      return res.status(409).json({
-        success: false,
-        message: "Email or phone already registered"
-      });
-    }
 
-    const newUser = {
-      id: uuidv4(),
-      name,
-      email,
-      phone,
-      password,
-      createdAt: new Date().toISOString()
-    };
+  const users = loadUsers();
 
-    await User.create(newUser);
 
-    res.json({
-      success: true,
-      user: newUser
-    });
+  const existing = users.find((u) => u.email === email || u.phone === phone);
+  if (existing) {
+    return res.status(409).json({ success: false, message: "Email or phone already registered" });
+  }
 
-  } catch (err) {
-    res.status(500).json({
-      success: false,
-      error: err.message
-    });
-  }
+
+  const newUser = {
+    id: uuidv4(),
+    name,
+    email,
+    phone,
+    password,
+    createdAt: new Date().toISOString(),
+  };
+
+
+  users.push(newUser);
+  saveUsers(users);
+
+
+  res.json({
+    success: true,
+    user: {
+      id: newUser.id,
+      name: newUser.name,
+      email: newUser.email,
+      phone: newUser.phone,
+    },
+  });
 });
 
+
 // ✅ USER LOGIN - CORRECT ENDPOINT
-app.post("/user-login", async (req, res) => {
+app.post("/user-login", (req, res) => {
   const { emailOrPhone, password } = req.body;
 
 
@@ -343,13 +323,14 @@ app.post("/user-login", async (req, res) => {
       .json({ success: false, message: "Email / phone and password required" });
   }
 
-const user = await User.findOne({
-  $or: [
-    { email: emailOrPhone },
-    { phone: emailOrPhone }
-  ],
-  password
-});
+
+  const users = loadUsers();
+
+
+  const user = users.find(
+    (u) =>
+      (u.email === emailOrPhone || u.phone === emailOrPhone) && u.password === password
+  );
 
 
   if (!user) {
