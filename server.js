@@ -313,7 +313,7 @@ app.post("/user-register", (req, res) => {
 
 
 // ✅ USER LOGIN - CORRECT ENDPOINT
-app.post("/userlogin.html", (req, res) => {
+app.post("/user-login", (req, res) => {
   const { emailOrPhone, password } = req.body;
 
 
