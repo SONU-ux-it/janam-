@@ -1549,7 +1549,12 @@ app.get("/mongo-test", async (req, res) => {
     });
   }
 });
-
+app.get("/mongo-info", async (req, res) => {
+  res.json({
+    dbName: mongoose.connection.db.databaseName,
+    collection: Post.collection.name
+  });
+});
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`✅ Backend running at ${BASE_URL}`);
