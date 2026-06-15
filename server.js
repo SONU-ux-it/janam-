@@ -16,7 +16,7 @@ dns.setServers(["8.8.8.8", "8.8.4.4"]);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
+const BASE_URL = process.env.BASE_URL || "https://janam-cphc.onrender.com";
 const MONGO_URI = process.env.MONGO_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
 const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
@@ -682,7 +682,17 @@ app.post("/post-room", authenticateToken, upload.array("photos", 12), async (req
     res.status(500).json({ success: false, error: err.message });
   }
 });
-
+app.get("/mongo-test", async (req, res) => {
+  try {
+    const count = await Post.countDocuments();
+    res.json({
+      mongoConnected: mongoose.connection.readyState,
+      totalPosts: count
+    });
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
 // MY ROOMS
 app.get("/my-rooms", authenticateToken, async (req, res) => {
   try {
