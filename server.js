@@ -1555,6 +1555,19 @@ app.get("/mongo-info", async (req, res) => {
     collection: Post.collection.name
   });
 });
+app.get("/all-posts-test", async (req, res) => {
+  try {
+    const posts = await Post.find().limit(5);
+    res.json({
+      count: await Post.countDocuments(),
+      posts
+    });
+  } catch (err) {
+    res.json({
+      error: err.message
+    });
+  }
+});
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`✅ Backend running at ${BASE_URL}`);
