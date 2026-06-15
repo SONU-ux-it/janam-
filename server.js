@@ -1536,7 +1536,8 @@ app.use((err, req, res, next) => {
 }); 
 app.get("/mongo-test", async (req, res) => {
   try {
-    const total = await RoomPost.countDocuments();
+    const total = await Post.countDocuments();
+
     res.json({
       success: true,
       total
