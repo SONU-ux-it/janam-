@@ -1533,6 +1533,20 @@ app.get("/api/health",async (req, res) => {
 app.use((err, req, res, next) => {
   console.error("❌ ERROR:", err.message);
   res.status(500).json({ error: "Server error" });
+}); 
+app.get("/mongo-test", async (req, res) => {
+  try {
+    const total = await RoomPost.countDocuments();
+    res.json({
+      success: true,
+      total
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
 });
 
 app.listen(PORT, "0.0.0.0", () => {
