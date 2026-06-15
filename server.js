@@ -682,17 +682,7 @@ app.post("/post-room", authenticateToken, upload.array("photos", 12), async (req
     res.status(500).json({ success: false, error: err.message });
   }
 });
-app.get("/mongo-test", async (req, res) => {
-  try {
-    const count = await Post.countDocuments();
-    res.json({
-      mongoConnected: mongoose.connection.readyState,
-      totalPosts: count
-    });
-  } catch (err) {
-    res.json({ error: err.message });
-  }
-});
+
 // MY ROOMS
 app.get("/my-rooms", authenticateToken, async (req, res) => {
   try {
