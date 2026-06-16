@@ -508,7 +508,9 @@ app.post("/wishlist/add", authenticateToken, async (req, res) => {
       return res.status(400).json({ success: false, message: "postId is required" });
     }
 
-    const post = await Post.findOne({ id: postId, type: "room" });
+   const post = await Post.findOne({
+   id: postId
+});
     if (!post) {
       return res.status(404).json({ success: false, message: "Room not found" });
     }
@@ -566,30 +568,29 @@ app.post("/wishlist/remove", authenticateToken, async (req, res) => {
 // GET WISHLIST
 app.get("/wishlist", authenticateToken, async (req, res) => {
   try {
-    const wishlistItems = await Wishlist.find({ userId: req.user.id }).sort({ createdAt: -1 });
-    const wishlistIds = wishlistItems.map((w) => w.postId);
- 
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+    const wishlistItems = await Wishlist.find({
+      userId: req.user.id
+    }).sort({ createdAt: -1 });
 
-// CHECK WISHLIST ITEM
-app.get("/wishlist/:postId", authenticateToken, async (req, res) => {
-  try {
-    const { postId } = req.params;
-    const exists = await Wishlist.findOne({ userId: req.user.id, postId });
+    const wishlistIds = wishlistItems.map(item => item.postId);
+
+    const wishlistPosts = await Post.find({
+      id: { $in: wishlistIds }
+    });
 
     res.json({
       success: true,
-      postId,
-      isInWishlist: !!exists,
+      wishlist: wishlistPosts,
+      total: wishlistPosts.length
     });
+
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
   }
 });
-
 // POST ROOM
 app.post("/post-room", authenticateToken, upload.array("photos", 12), async (req, res) => {
   try {
