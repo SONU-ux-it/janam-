@@ -10,7 +10,7 @@ const axios = require("axios");
 const mongoose = require("mongoose");
 const dns = require("dns");
 const jwt = require("jsonwebtoken");
-const bcrypt = require("bcrypt");
+const bcrypt = require("bcryptjs");
 
 dns.setServers(["8.8.8.8", "8.8.4.4"]);
 
